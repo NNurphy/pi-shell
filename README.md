@@ -1,5 +1,7 @@
 **简体中文** · [English](README.en.md)
 
+<p align="center"><img src="web/favicon.svg" width="96" alt="pi-shell"></p>
+
 # pi-shell
 
 > 给本机的 **pi 编码代理**加一层轻薄的浏览器壳——不装第二套引擎、不复制数据、卸载就是删目录。

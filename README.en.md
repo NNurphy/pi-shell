@@ -1,5 +1,7 @@
 English · **[简体中文](README.md)**
 
+<p align="center"><img src="web/favicon.svg" width="96" alt="pi-shell"></p>
+
 # pi-shell
 
 > A thin, disposable browser shell for your local **pi coding agent** — no second engine, no copied data, uninstall = delete the folder.
