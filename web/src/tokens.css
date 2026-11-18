@@ -1,0 +1,222 @@
+/* ============================================================================
+   pi-shell · B8 设计系统 token（单一来源）
+   来源：docs/DESIGN-SYSTEM.md §2（Token 表）
+   规则：
+   - 业务样式里**禁止**写十六进制色值，只允许引用这里定义的变量（零远程资源 N-05）。
+   - 三套主题入口：默认（跟随系统）、[data-theme="light"]、[data-theme="dark"]。
+     （data-theme="system" 由 main.js 写在 <html> 上，走 prefers-color-scheme 分支）
+   - Dark 的语义块写两遍（媒体查询 + 属性选择器）—— CSS 没有「变量集合复用」语法，
+     宁可重复也不能让「显式暗色」或「系统暗色」任一条路径失效。
+   ========================================================================== */
+
+:root {
+  /* 色彩 · Light（纸） */
+  --canvas: #fbfaf7;
+  --surface: #f4f2ec;
+  --surface-hover: #efede6;
+  --surface-sunken: #efede6;
+  --line: #e0dbd1;
+  --line-strong: #c9c3b7;
+  --line-control: #88857d;
+  --ink: #1c1b19;
+  --ink-2: #57534b;
+  --ink-3: #6e695e;
+  --ink-inverse: #ffffff;
+  --accent: #a8461c;
+  --accent-ink: #96401a;
+  --accent-soft: #f7e9df;
+  --role-user-bg: #f1efe8;
+  --focus-ring: #a8461c;
+  --success: #2e6b3f;
+  --warning: #7e5a00;
+  --danger: #a3261b;
+  --danger-soft: #f9e7e4;
+  --scrim: rgba(28, 27, 25, 0.42);
+  --diff-add: #eaf3ea;
+  --diff-del: #f9e7e4;
+  /* 滚动条（B8.1）：thumb = 分隔线提亮一档，track 透明；hover 再深/亮一档。禁止彩色。 */
+  --scroll-thumb: #c9c3b7; /* = --line-strong */
+  --scroll-thumb-hover: #88857d; /* = --line-control */
+
+  /* 层级：内容区永远 e0（= 1px 规则线），阴影只给浮层 */
+  --e0: none;
+  --e1: 0 1px 2px rgba(28, 27, 25, 0.06), 0 8px 24px rgba(28, 27, 25, 0.1);
+  --e2: 0 24px 64px rgba(28, 27, 25, 0.2);
+
+  /* 字体：只用系统字（离线、零依赖），个性由字号阶梯 + 等宽元数据承担 */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", ui-monospace, monospace;
+
+  /* 字号 / 行高阶梯 */
+  --fs-display: 24px;
+  --fs-h1: 19px;
+  --fs-h2: 16px;
+  --fs-body: 15px;
+  --fs-sm: 13px;
+  --fs-label: 12px;
+  --fs-micro: 11px;
+  --fs-code: 13px;
+  --lh-display: 32px;
+  --lh-h1: 28px;
+  --lh-h2: 24px;
+  --lh-body: 24px;
+  --lh-sm: 20px;
+  --lh-label: 16px;
+  --lh-micro: 14px;
+  --lh-code: 20px;
+  --measure: 72ch; /* 正文行宽上限（68ch 可读区 + 余量） */
+
+  /* 间距刻度（4 基准） */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+  --sp-7: 20px;
+  --sp-8: 24px;
+  --sp-9: 32px;
+  --sp-10: 40px;
+  --sp-11: 56px;
+
+  /* 圆角（上限 8px；列表行 0 圆角） */
+  --r-xs: 3px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-full: 999px;
+
+  /* 动效 */
+  --dur-1: 90ms;
+  --dur-2: 140ms;
+  --dur-3: 180ms;
+  --dur-4: 240ms;
+  --ease-std: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 1);
+  --blink: 1060ms;
+
+  /* 布局（LAYOUT §1） */
+  --h-header: 44px;
+  --sidebar-w: 320px; /* Q6：默认 288→320（288 下会话摘要被切太狠）；拖拽可 260–520 */
+  --panel-w: 420px;
+  --row-group-h: 32px;
+  --row-session-h: 68px; /* 三行密度：标题 / 元数据 / 摘要（Q6：58→68，行与行、标题与摘要各放宽一档，仍 ≤ +20%） */
+  --log-pad-x: 32px;
+  --turn-rail: 44px; /* 左轨总宽（序号列 + 间距） */
+
+  /* 斑马纹不要、彩色 tag 不要——所有派生都从上面取 */
+  color-scheme: light;
+}
+
+/* ---------- Dark（夜班）：显式暗色 ---------- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #181917;
+  /* B8.1：侧栏/内容亮度差拉开一档（surface #151614 → #111111，WCAG 对比 1.0291 → 1.0704）；
+     仍比 --surface-sunken(#101110) 亮一档，不破坏「sunken 更沉」的语义顺序 */
+  --surface: #111111;
+  --surface-hover: #222320;
+  --surface-sunken: #101110;
+  /* B8.1：暗色分隔线提亮一档（#2b2c28 → #313230），避免暗底下分隔线「消失」 */
+  --line: #313230;
+  --line-strong: #3b3c36;
+  --line-control: #6a6b63;
+  --ink: #e9e6df;
+  --ink-2: #aba69b;
+  --ink-3: #8a857c;
+  --ink-inverse: #17181a;
+  --accent: #e3995f;
+  --accent-ink: #efa872;
+  --accent-soft: #2a211b;
+  --role-user-bg: #24251f;
+  --focus-ring: #e3995f;
+  --success: #6fbf84;
+  --warning: #d8a65a;
+  --danger: #f08b80;
+  --danger-soft: #2c1b1a;
+  --scrim: rgba(0, 0, 0, 0.55);
+  --diff-add: #16241a;
+  --diff-del: #2a1a18;
+  /* 滚动条：thumb 用新的 --line 再提亮一档；暗色下 hover 是「更亮」= 视觉上更重 */
+  --scroll-thumb: #46473f;
+  --scroll-thumb-hover: #5e5f56;
+  --e1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.45);
+  --e2: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- Dark（夜班）：跟随系统 ---------- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+    --canvas: #181917;
+    --surface: #111111;
+    --surface-hover: #222320;
+    --surface-sunken: #101110;
+    --line: #313230;
+    --line-strong: #3b3c36;
+    --line-control: #6a6b63;
+    --ink: #e9e6df;
+    --ink-2: #aba69b;
+    --ink-3: #8a857c;
+    --ink-inverse: #17181a;
+    --accent: #e3995f;
+    --accent-ink: #efa872;
+    --accent-soft: #2a211b;
+    --role-user-bg: #24251f;
+    --focus-ring: #e3995f;
+    --success: #6fbf84;
+    --warning: #d8a65a;
+    --danger: #f08b80;
+    --danger-soft: #2c1b1a;
+    --scrim: rgba(0, 0, 0, 0.55);
+    --diff-add: #16241a;
+    --diff-del: #2a1a18;
+    --scroll-thumb: #46473f;
+    --scroll-thumb-hover: #5e5f56;
+    --e1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.45);
+    --e2: 0 24px 64px rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* ---------- 显式亮色（系统暗色时也要能强制回纸） ---------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* ---------- 字号三档（整体缩放，不单独改某一级） ---------- */
+:root[data-font="small"] {
+  --fs-display: 22px;
+  --fs-h1: 18px;
+  --fs-h2: 15px;
+  --fs-body: 14px;
+  --fs-sm: 12px;
+  --fs-label: 11px;
+  --fs-micro: 10px;
+  --fs-code: 12px;
+}
+:root[data-font="large"] {
+  --fs-display: 26px;
+  --fs-h1: 21px;
+  --fs-h2: 17px;
+  --fs-body: 17px;
+  --fs-sm: 14px;
+  --fs-label: 13px;
+  --fs-micro: 12px;
+  --fs-code: 14px;
+}
+
+/* ---------- 密度两档（只换预定义组合，不在业务里临时改 padding） ---------- */
+:root[data-density="compact"] {
+  --row-group-h: 28px;
+  --row-session-h: 40px; /* 摘要行隐藏 → 两行 */
+  --log-pad-x: 24px;
+  --sidebar-w: 264px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+    --dur-4: 0ms;
+  }
+}

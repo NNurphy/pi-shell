@@ -1,0 +1,5 @@
+{
+  "provider": "bailian-token-plan",
+  "model": "deepseek-v4.1-flash-1017",
+  "note": "pi-shell 开发/测试引擎的模型兜底来源；test-gate 等开发脚本读这里；不依赖全局 settings.json，也不依赖调用者的环境变量。"
+}

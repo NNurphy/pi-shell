@@ -1,0 +1,15 @@
+# 运行日志（03 §13）
+logs/
+
+# Node（本项目零第三方依赖，仅防误装）
+node_modules/
+package-lock.json
+
+# 临时/备份
+*.bak
+*.bak.*
+*.tmp
+# B-12：删除会话的可撤销备份（本地数据，不入库）
+backups/
+.DS_Store
+Thumbs.db

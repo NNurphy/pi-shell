@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pi-shell</title>
+    <!-- B8.1：favicon（内联 SVG 文件，零远程资源）；没有再请求 /favicon.ico → 桥日志无 404 -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- B8：token 单一来源（零远程资源：只引本地 css，无字体/CDN） -->
+    <link rel="stylesheet" href="/src/tokens.css" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <!-- 顶栏（44px）：产品标 · 工作区 | 状态胶囊 | 会话/模型/思考级别 ⋯ | Changes
+         收敛前是 10 个平铺按钮；树/文件/Diff/设置/重启/命令面板/pid/版本/cwd 全进 ⋯。 -->
+    <header class="bar">
+      <!-- 移动端抽屉开关（≤768px 显示；桌面 display:none，不占位）。
+           44×44 命中区，aria-expanded 由 main.js 同步。外包 span 与 brand-wrap 一致：
+           顶栏可见入口数（ui-b8-shots E8）只统计 header.bar 的直接子按钮。 -->
+      <span class="toggle-wrap">
+        <button
+          id="toggle-sidebar"
+          class="toggle-sidebar"
+          type="button"
+          aria-label="会话列表"
+          aria-controls="sidebar-body"
+          aria-expanded="false"
+          title="会话列表"
+        >
+          ☰
+        </button>
+      </span>
+      <!-- 产品标：内联 SVG 标志 + 字标。标志用 currentColor 随主题变色。
+           ⚠ 用 wrapper 包住 button：顶栏可见入口数（ui-b8-shots E8）只统计 header.bar 的直接子按钮，
+           产品标是导航而不是第 9 个入口。 -->
+      <span class="brand-wrap">
+        <button id="brand-home" class="brand-btn" type="button" title="回到新会话（当前会话保留在左侧列表）">
+          <!-- 标志：π 的骨架（页眉横笔 + 两条竖腿 = 两页页边），底部两条短横 = 两页页脚。1.5px、无渐变。 -->
+          <svg class="brand-mark" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false">
+            <path d="M3.75 5.5h12.5" />
+            <path d="M7.25 5.5v10.75" />
+            <path d="M12.75 5.5v10.75" />
+            <path d="M7.25 16.25h-3.5" />
+            <path d="M12.75 16.25h3.5" />
+          </svg>
+          <span class="brand">pi-shell</span>
+        </button>
+      </span>
+      <span class="bar-div" aria-hidden="true"></span>
+      <span id="ws-path" class="ws" title="当前工作区">—</span>
+
+      <span id="state" class="state" data-state="not_started" title="引擎状态">—</span>
+      <span id="engines" class="engines" title="已认领的 pi 引擎" hidden></span>
+
+      <span class="grow"></span>
+
+      <button id="new-session" type="button" class="qbtn" title="新建会话（发消息后才落盘）">新会话</button>
+      <select id="model-select" class="pick" title="模型（只列已配置；GET /api/models）"></select>
+      <button id="reload-models" class="iconbtn" type="button" title="重新检测已配置的模型">⟳</button>
+      <select id="thinking-select" class="pick pick-narrow" title="思考级别（GET /api/thinking-levels）"></select>
+
+      <span id="ext-status" class="ext-status" hidden></span>
+
+      <!-- 分栏：1/2/3 列。包在 span 里（顶栏可见入口计数只统计 header.bar 的直接子按钮）。
+           Q4：每列 = 一个引擎（clientId = base#cN）+ 一个会话；多列同时 streaming。 -->
+      <span class="split-wrap" id="split-control" role="group" aria-label="分栏（1–3 列）" title="分栏">
+        <button type="button" class="split-btn" data-split="1" aria-pressed="true" title="单列">1</button>
+        <button type="button" class="split-btn" data-split="2" aria-pressed="false" title="两列">2</button>
+        <button type="button" class="split-btn" data-split="3" aria-pressed="false" title="三列">3</button>
+      </span>
+
+      <button id="changes" class="changes" type="button" title="本次工作区的 git 改动" hidden>
+        Changes <b id="changes-count" class="num">0</b><span id="changes-lines" class="lines" hidden></span>
+      </button>
+
+      <button
+        id="open-menu"
+        class="qbtn menu-btn"
+        type="button"
+        aria-haspopup="true"
+        aria-expanded="false"
+        aria-controls="overflow-menu"
+        title="更多（树 / 文件 / Diff / 设置 / 重启 / 诊断）"
+      >
+        ⋯
+      </button>
+
+      <div id="overflow-menu" class="menu" role="menu" hidden>
+        <button id="open-tree" class="menu-item" type="button" role="menuitem" title="会话树（fork / clone）">树</button>
+        <button id="open-files" class="menu-item" type="button" role="menuitem" title="工作区文件（只读预览）">文件</button>
+        <button id="open-diff" class="menu-item" type="button" role="menuitem" title="Git diff（只读）">Diff</button>
+        <button id="open-palette" class="menu-item" type="button" role="menuitem" title="命令面板 Ctrl+K">命令面板 <kbd>Ctrl+K</kbd></button>
+        <button id="open-mcp" class="menu-item" type="button" role="menuitem" title="本列的 MCP server（默认不带，按需勾选）">MCP <span id="open-mcp-badge" class="menu-badge" hidden></span></button>
+        <button id="open-resources" class="menu-item" type="button" role="menuitem" title="引擎资源：内存 / 空闲 / 释放 / 关 MCP">资源</button>
+        <button id="open-settings" class="menu-item" type="button" role="menuitem" title="偏好设置">设置</button>
+        <button id="restart-bridge" class="menu-item" type="button" role="menuitem" title="重启桥（走启动脚本的重启循环）">重启桥</button>
+        <div class="menu-sep" aria-hidden="true"></div>
+        <div class="menu-meta">
+          <span>pid <b id="pid">—</b></span>
+          <span>pi <b id="version">—</b></span>
+          <span id="cwd" class="menu-cwd">—</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <!-- 移动端抽屉遮罩（点击关闭）；桌面永不显示（.sidebar-scrim 默认 display:none） -->
+      <div id="sidebar-scrim" class="sidebar-scrim" hidden></div>
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <span class="sb-title">会话</span>
+          <input id="session-search" class="session-search" placeholder="过滤标题 / 摘要" />
+          <button id="search-clear" class="search-clear iconbtn" type="button" title="清空过滤" hidden>×</button>
+          <button id="reload-list" class="iconbtn" type="button" title="重新扫描会话目录">刷新</button>
+        </div>
+        <div id="sidebar-body" class="sidebar-body"></div>
+      </aside>
+      <!-- 侧栏拖拽分割线（Q6）：4px 命中区，260–520px，双击恢复 320；触摸设备隐藏 -->
+      <div
+        id="sidebar-resizer"
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖拽调整侧栏宽度（双击恢复默认）"
+        aria-valuemin="260"
+        aria-valuemax="520"
+        aria-valuenow="320"
+        tabindex="0"
+        title="拖拽调整侧栏宽度 · 双击恢复 320"
+      ></div>
+
+      <main class="main">
+        <!-- 窄屏（≤900px）列切换器：只显示当前列，用 01/02/03 切换（后台列继续收事件） -->
+        <div id="col-switcher" class="col-switcher" role="tablist" aria-label="列切换" hidden></div>
+        <!-- 多列容器：每列 = 一个引擎（clientId = base#cN）+ 一个会话 + 独立滚动/Composer -->
+        <div id="columns" class="columns">
+          <section class="column is-active" id="column-1" data-col-key="c1" aria-label="列 1">
+            <header class="col-head" id="col-head" hidden>
+              <span class="col-no" data-role="col-no">01</span>
+              <span class="col-title" data-role="col-title">新会话</span>
+              <span class="grow"></span>
+              <span class="col-mcp" data-role="col-mcp" hidden title=""></span>
+              <span class="col-model" data-role="col-model">—</span>
+              <button class="col-close" data-role="col-close" type="button" title="关闭该列" aria-label="关闭该列">×</button>
+            </header>
+            <div class="col-body">
+              <div id="session-bar" class="session-bar" data-role="session-bar" hidden>
+                <span id="session-meta" class="session-meta" data-role="session-meta"></span>
+                <span class="grow"></span>
+                <span id="stats" class="stats" data-role="stats" hidden></span>
+              </div>
+              <div id="widget" class="widget" data-role="widget" hidden></div>
+              <div class="log-wrap">
+                <div id="log" class="log" data-role="log" aria-live="polite">
+                  <div class="welcome">
+                    <p class="welcome-title">选一个会话，或直接输入开始</p>
+                    <p class="muted">空会话不落盘：发出第一条消息后才会出现在左侧列表。</p>
+                  </div>
+                </div>
+                <button id="jump-bottom" class="jump-bottom" data-role="jump-bottom" type="button" title="回到底部（跟随新消息）" hidden>↓ 回到底部</button>
+              </div>
+              <div id="attach-banner" class="attach-banner" data-role="attach-banner" hidden>
+                <span id="attach-text" data-role="attach-text">接管中…</span>
+                <button id="attach-retry" class="attach-retry" type="button" hidden>重试接管</button>
+              </div>
+              <div id="reconnect" class="reconnect" data-role="reconnect" hidden>
+                <span id="reconnect-text" data-role="reconnect-text">事件流断开</span>
+                <button id="reconnect-btn" class="reconnect-btn" type="button">重试</button>
+              </div>
+              <p id="notice" class="notice" data-role="notice" hidden></p>
+              <div id="attach-bar" class="attach-bar" data-role="attach-bar" hidden></div>
+              <form id="composer" class="composer" data-role="composer" data-streaming="false">
+                <div class="composer-card">
+                  <textarea id="input" data-role="composer-input" rows="3" placeholder="输入消息（Enter 换行 · Ctrl+Enter 发送 · Ctrl+K 命令面板 · Ctrl+U 注入文件）"></textarea>
+                  <div class="composer-toolbar">
+                    <div id="attach-buttons" class="attach-buttons" data-role="attach-buttons">
+                      <label class="file-label" title="附加图片">图片
+                        <input id="image-input" class="image-input" data-role="image-input" type="file" accept="image/*" multiple hidden />
+                      </label>
+                      <label class="file-label" title="注入文本文件（≤200KB）">文件
+                        <input id="file-input" class="file-input" data-role="file-input" type="file" accept="text/*,.md,.json,.jsonl,.txt,.js,.mjs,.ts,.py,.css,.html,.yml,.yaml" hidden />
+                      </label>
+                    </div>
+                    <select id="behavior" class="behavior" data-role="behavior" title="运行中的发送方式" hidden>
+                      <option value="steer">插入 steer</option>
+                      <option value="followUp">排队 followUp</option>
+                    </select>
+                    <span class="grow"></span>
+                    <button type="button" id="abort" class="btn-danger" data-role="abort" disabled>中止</button>
+                    <button type="submit" id="send" class="btn-primary" data-role="send">发送</button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <div id="settings" class="settings" hidden>
+      <div class="settings-box">
+        <h2>偏好设置</h2>
+        <label>主题
+          <select id="pref-theme">
+            <option value="system">跟随系统</option>
+            <option value="light">亮色</option>
+            <option value="dark">暗色</option>
+          </select>
+        </label>
+        <label>密度
+          <select id="pref-density">
+            <option value="comfortable">舒适</option>
+            <option value="compact">紧凑</option>
+          </select>
+        </label>
+        <label>字号
+          <select id="pref-font">
+            <option value="small">小（13px）</option>
+            <option value="normal">标准（15px）</option>
+            <option value="large">大（17px）</option>
+          </select>
+        </label>
+        <label class="check">
+          <input id="pref-hints" type="checkbox" /> 显示快捷键提示
+        </label>
+        <p class="settings-note">偏好存于浏览器 localStorage；刷新保持。快捷键：Ctrl+K 命令面板 · Ctrl+U 注入文件 · Esc 中止。</p>
+        <div class="settings-actions">
+          <button id="settings-reset" type="button">恢复默认</button>
+          <button id="settings-close" type="button">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="mcp-panel" class="settings mcp-panel" hidden>
+      <div class="settings-box">
+        <h2>MCP（本列）</h2>
+        <p id="mcp-sub" class="mcp-sub">—</p>
+        <div id="mcp-list" class="mcp-list"></div>
+        <p class="settings-note">切换会重启本列引擎（约 1 秒），会话不变。</p>
+        <p id="mcp-status" class="mcp-status" hidden></p>
+        <div class="settings-actions">
+          <button id="mcp-close" type="button">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- N1-b：资源面板（⋯ → 资源）。RSS = pi + MCP 子进程整棵树，桥侧 5s 缓存 -->
+    <div id="resources-panel" class="settings resources-panel" hidden>
+      <div class="settings-box resources-box">
+        <h2>资源</h2>
+        <p id="resources-sub" class="mcp-sub">—</p>
+        <div class="resources-actions">
+          <button id="resources-keep-active" type="button" title="释放其它列的引擎，只保留当前列（会话文件保留）">只留当前列</button>
+          <button id="resources-refresh" type="button" title="重新读取 /api/engines/stats">全部刷新</button>
+        </div>
+        <div id="resources-list" class="resources-list"></div>
+        <p id="resources-summary" class="resources-summary">—</p>
+        <p id="resources-status" class="mcp-status" hidden></p>
+        <div class="settings-actions">
+          <button id="resources-close" type="button">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <aside id="panel" class="panel" hidden>
+      <header class="panel-head">
+        <span id="panel-title">面板</span>
+        <span class="grow"></span>
+        <button id="panel-action" type="button" hidden>克隆当前会话</button>
+        <button id="panel-close" type="button" title="关闭面板">×</button>
+      </header>
+      <div id="panel-body" class="panel-body"></div>
+    </aside>
+
+    <div id="restart-overlay" class="restart-overlay" hidden>
+      <div class="restart-box">
+        <p id="restart-title" class="restart-title">桥正在重启…</p>
+        <p id="restart-note" class="restart-note"></p>
+        <button id="restart-close" type="button" hidden>关闭</button>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <div id="modal" class="modal" hidden></div>
+
+    <!-- A1：新建会话前先选项目目录（桌面居中卡片 / ≤768 底部抽屉）。
+         列表 = /api/sessions 各分组 cwd（去重，最近使用优先）+ localStorage 最近 5 个；
+         「其他目录…」手输 C:\... 或 C:/...。确认后 POST /api/session/new {cwd}（只影响当前列）。 -->
+    <div id="project-picker" class="picker" hidden>
+      <div class="picker-box" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+        <h2 id="picker-title" class="picker-title">选择项目</h2>
+        <p class="picker-sub">新会话会在所选目录启动（只影响当前列）。</p>
+        <div id="picker-list" class="picker-list" role="listbox" aria-label="项目目录" data-role="picker-list"></div>
+        <div class="picker-other-row">
+          <button id="picker-other" class="picker-other" type="button" data-role="picker-other" aria-expanded="false">其他目录…</button>
+        </div>
+        <input
+          id="picker-path"
+          class="picker-path"
+          data-role="picker-path"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="C:\Users\user\my-project 或 C:/Users/user/my-project"
+          hidden
+        />
+        <p id="picker-error" class="picker-error" data-role="picker-error" hidden></p>
+        <div class="picker-actions">
+          <button id="picker-cancel" type="button" data-role="picker-cancel">取消</button>
+          <button id="picker-confirm" type="button" class="picker-confirm" data-role="picker-confirm">新建会话</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="palette" class="palette" hidden>
+      <div class="palette-box">
+        <div class="palette-head">
+          <input id="palette-input" placeholder="搜索命令 / 技能 / 模板…" />
+          <button id="palette-close" type="button">×</button>
+        </div>
+        <div id="palette-list" class="palette-list"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

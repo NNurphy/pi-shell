@@ -1,0 +1,20 @@
+{
+  "name": "pi-shell-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "author": "NNurphy",
+  "type": "module",
+  "description": "pi-shell bridge：pi 编码代理（@earendil-works/pi-coding-agent）的浏览器外壳（HTTP/SSE → pi RPC）",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NNurphy/pi-shell.git"
+  },
+  "homepage": "https://github.com/NNurphy/pi-shell#readme",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {}
+}
