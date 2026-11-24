@@ -3,6 +3,26 @@
 > 适用范围：pi-shell 发布记录
 > 维护约定：格式 `## vX.Y.Z · YYYY-MM-DD`，只记"能力 / 限制 / 不兼容变更"，细节见 `RELEASE-NOTES.md`。
 
+## v1.1.0 · 2026-11-25
+
+**桌面化 + 超大会话接管修复**：LOGO 图标、一键快捷方式与托盘模式，打开超大历史会话不再超时。
+
+### 能力
+
+1. **LOGO 图标与桌面快捷方式安装器**：`web/favicon.svg` 栅格化为两个 `.ico`（浅色 / 深色背景变体，各含 16/32/48/256 四尺寸；`node scripts/make-icon.mjs` 零 npm 依赖可复现）。`scripts\setup-windows.ps1` 一键创建 / 更新桌面快捷方式：`pi-shell.lnk`（托盘模式入口）与 `重启 pi-shell.lnk`；幂等可重复执行，`-Remove` 一键移除，只动名单里的两个文件。
+2. **系统托盘模式（Windows）**：双击快捷方式启动后**无常驻终端窗口**，右下角托盘图标右键控制（打开页面 / 重启 / 停止）；tooltip 实时显示引擎数（如 `引擎 2/4`）；图标随系统浅 / 深色主题自动切换；单实例（已在跑只开页面，不起第二个）；桥崩溃自愈（1s/2s/4s 退避）保留，自愈放弃时托盘气泡提醒。控制台入口 `scripts\start-pi-shell.cmd` 仍保留（调试用）。
+3. **超大会话接管修复**：打开超大历史会话时，引擎 RPC 响应（get_entries 把全部 entries 装一行）可超过 JSONL 单行上限旧值 8MiB → 该行被丢弃 → 桥等不到应答 → 30s 超时、接管失败。现在单行上限提高到 **32MiB**（`PI_SHELL_MAX_LINE_BYTES` 可按需再调大；非法值回退默认并记 warn）；「超限丢弃 + `pi_line_skipped` 日志」的保护底线不变。
+
+### 限制（明确不承诺的）
+
+- 托盘模式为 Windows 专属（PowerShell 5.1 + WinForms）；其他平台沿用控制台 / 直接 `node bridge/src/index.mjs`。
+- 单行仍超 32MiB 的极端会话依旧无法接管（保护底线），需调 `PI_SHELL_MAX_LINE_BYTES`。
+
+### 测试
+
+- `cd bridge && npm test` → **223/223**（`node --test`，纯夹具，不碰真实 `~/.pi/agent`；本版新增 7 条：32MiB 默认值、`PI_SHELL_MAX_LINE_BYTES` 合法 / 非法 / 超限场景等）。
+- 新增证据脚本：[`scripts/evidence/logo-shortcut.mjs`](scripts/evidence/logo-shortcut.mjs)（图标与快捷方式 7 项断言）、[`scripts/evidence/tray-host.mjs`](scripts/evidence/tray-host.mjs)（托盘 8 项断言，夹具端口独立）、[`scripts/evidence/oversize-entries.mjs`](scripts/evidence/oversize-entries.mjs)（4 场景复刻修复）。
+
 ## v1.0.0 · 2026-11-18
 
 **首个公开发布**：给本机 pi 编码代理（`@earendil-works/pi-coding-agent`）的浏览器壳。

@@ -43,7 +43,7 @@
 │   index.mjs       路由 / 静态 / SSE 广播 / 会话打开两段式编排 / 引擎重启 / 本轮改动接线 / 日志       │
 │   engines.mjs     引擎池：getOrCreate · own(claim) · release · sweep(60s) · sessionOwner(409)       │
 │   rpc.mjs         spawn(process.execPath, cli.js) + JSONL 请求配对 + 崩溃退避重启                    │
-│   framing.mjs     只按 \n 切分 + 半行缓冲 + 8MiB 单行上限                                          │
+│   framing.mjs     只按 \n 切分 + 半行缓冲 + 32MiB 单行上限（PI_SHELL_MAX_LINE_BYTES 可调）        │
 │   mcp-config.mjs  MCP 按需：配置校验/原子写/cwd 规则/临时 agentDir（shim）构建与回收                │
 │   origins.mjs     会话来源分类（user/agent/test）+ 元数据文件 持久化 + 工具执行窗口                  │
 │   sessions.mjs    会话扫描与摘要（只读）/ readSessionEntries（读文件先渲染）                        │
@@ -202,7 +202,7 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 | `log.mjs` | 日志按大小轮转：写前检查、启动整理其它日志、手动脚本共用同一套实现 | `rotateIfNeeded()` / `rotateIfNeededAsync()` / `appendWithRotation()` / `resolveLogLimits()` / `DEFAULT_ROTATE_FILES` |
 | `engines.mjs` | 引擎池与生命周期（pin / 接管） | `EnginePool`（`getOrCreate/own/release/sweep/sessionOwner/adoptable/adopt/liveCount`）、`Engine.noteStreaming/noteSettled`、`MAX_PIN_MS`、`DEFAULT_ADOPT_GRACE_MS`、`resolveMaxEngines()`、`DEFAULT_MAX_ENGINES=4`、`DEFAULT_IDLE_MS=60000` |
 | `rpc.mjs` | spawn + JSONL 请求配对 + 握手 + 崩溃退避重启 | `PiRpc`（`request()`、`args()`：`--mode rpc` / `--session-dir` / `--no-mcp`、`env()`：`PI_CODING_AGENT_DIR`） |
-| `framing.mjs` | 只按 `\n` 切分、半行缓冲、8MiB 单行丢弃 | `parseRecord()` / `FrameSplitter` |
+| `framing.mjs` | 只按 `\n` 切分、半行缓冲、单行上限 32MiB 丢弃（`PI_SHELL_MAX_LINE_BYTES` 覆盖，非法值回退默认并记 warn） | `parseRecord()` / `FrameSplitter` / `parseMaxLineBytes()` |
 | `sse-tail.mjs` | SSE 尾巴缓冲：按 seq 保存未落盘帧，供断线/接管回放（不重复、不乱序） | `SseTail`（`push/reset/since`）、`DEFAULT_MAX_BYTES=2MB`、`DEFAULT_MAX_FRAME_BYTES=512KB` |
 | `session-view.mjs` | 会话视图纯解析（B1）：`cwd/sessionFile/model/thinkingLevel/mcp` + 按 client 选引擎 | `buildSessionView()` / `normalizeModel()` / `pickSessionEngine()` / `pickReadEngine()` |
 | `project-dir.mjs` | 新会话目录校验与归一（A1） | `normalizeProjectDir()` / `resolveProjectDir()` / `sameProjectDir()` |
@@ -234,7 +234,10 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 
 | 脚本 | 用途 |
 |---|---|
-| `start-pi-shell.cmd` | 双击入口：单实例、Tailscale 自动双栈、崩溃自愈（1s/2s/4s，5 分钟 3 次）、3s 后开浏览器 |
+| `start-pi-shell.cmd` | 控制台入口（调试）：单实例、Tailscale 自动双栈、崩溃自愈（1s/2s/4s，5 分钟 3 次）、3s 后开浏览器 |
+| `tray-pi-shell.ps1` | 托盘程序（v1.1.0）：隐藏控制台、托盘右键控制（打开/重启/停止）、tooltip 实时引擎数、单实例 Mutex、浅/深色图标随主题 |
+| `setup-windows.ps1` | 桌面快捷方式安装器（v1.1.0）：创建/更新 `pi-shell.lnk`（托盘入口）与「重启 pi-shell.lnk」，幂等，`-Remove` 一键移除 |
+| `make-icon.mjs` | favicon.svg → 两个 .ico（浅/深色，16/32/48/256），Edge headless 截图 + PNG-in-ICO 拼装，零 npm 依赖 |
 | `restart-pi-shell.cmd` / `.ps1` | 桌面「重启 pi-shell」快捷方式 |
 | `tailscale-setup.ps1` | 打印 `100.x` 地址与排查清单；`-Apply` 只加一条仅 100.64.0.0/10 的入站规则 |
 | `test-gate.mjs` | 分层发版门（`--full` = 13 套件 / 300 断言） |
@@ -263,7 +266,7 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 5. **默认分组收起**：每次打开页面侧栏分组不自动展开；同 cwd 的 agent 分组与主组合并，不出现两个同名分组。
 6. **新会话不落盘**：发第一条消息前没有 `.jsonl`（列表里不会出现，`fork/clone` 也会被 pi 拒绝）。
 7. **"看"走读文件，"接管"才 `switch_session`**：读文件渲染零副作用；接管才碰引擎（默认无 MCP 时 ≈0.2s，勾了 MCP 回退到 1–3s）。
-8. **JSONL 只按 `\n` 切分**（禁 `readline`，U+2028/2029 会误判）；单行上限 8MiB，超限丢弃不中断。
+8. **JSONL 只按 `\n` 切分**（禁 `readline`，U+2028/2029 会误判）；单行上限 32MiB（`PI_SHELL_MAX_LINE_BYTES` 可调；旧值 8MiB 曾把超大会话的 get_entries 响应整行丢弃 → 30s 超时接管失败，v1.1.0 提高），超限丢弃不中断。
 9. **不能 `spawn("pi")`**：Windows 下必须 `spawn(process.execPath, [cli.js, …])`；`.cmd` 退路不实现。
 10. **stdout 只放协议数据**；日志写文件，仅 TTY 时镜像 stderr（非 TTY 不写，避免 Windows 管道同步写阻塞）。
 11. **文件和 Git 只读**，路径 `resolve`+`realpath` 双校验，不写 `index.lock`。
@@ -284,6 +287,7 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 
 | 版本 | 主题 | 说明 |
 |---|---|---|
+| v1.1.0 | 桌面化 + 超大会话接管修复 | LOGO 图标与快捷方式安装器（`setup-windows.ps1`）、系统托盘模式（`tray-pi-shell.ps1`）、JSONL 单行上限 8MiB→32MiB（`PI_SHELL_MAX_LINE_BYTES` 可调）；`bridge` 单测 223/223 |
 | v1.0.0 | 首个公开发布 | 多列并行、SSE 断线重连与恢复、后台不中断、会话记忆持久化、MCP 按需、树视图与本轮改动面板、模型配置 UI；`bridge` 单测 216/216、`test-gate --full` 20 套件可复核 |
 
 口径必读（v1.0.0 的几条约定）：

@@ -8,7 +8,7 @@ English · **[简体中文](README.md)**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node: ≥22.19](https://img.shields.io/badge/node-%E2%89%A522.19-green.svg)](https://nodejs.org)
-[![Tests: 216/216](https://img.shields.io/badge/tests-216%2F216-brightgreen.svg)](bridge/test)
+[![Tests: 223/223](https://img.shields.io/badge/tests-223%2F223-brightgreen.svg)](bridge/test)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-success.svg)](bridge/package.json)
 [![Platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-tested-informational.svg)](#faq)
 
@@ -114,18 +114,27 @@ Open <http://127.0.0.1:7788> in a browser.
 
 ✓ **Verify**: the page loads and the sidebar lists your pi sessions (grouped by project).
 
-**One-click on Windows**: double-click (or run) `scripts\start-pi-shell.cmd` —
+**One-click on Windows (recommended)**: run the installer once — it puts a `pi-shell` shortcut with the project logo on your desktop (tray mode):
 
-- single instance: if it's already running, it just opens the browser;
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
+```
+
+From then on, double-click the desktop **`pi-shell`** shortcut to start:
+
+- **tray mode**: no resident terminal window; right-click the tray icon (bottom-right) to open the page / restart / stop; hover it to see the live engine count (e.g. `engines 2/4`);
+- single instance: double-clicking the shortcut again while the tray is alive starts nothing new (to get back to the page, use tray right-click "Open page" or visit port 7788);
 - opens the browser ~3s after the bridge starts;
 - restarts the bridge on crash (1s / 2s / 4s backoff, at most 3 per 5 minutes);
-- closing the window stops everything — nothing stays resident.
+- stop = tray right-click "Stop" — nothing stays resident.
+
+**Console mode (debug entry)**: double-click (or run) `scripts\start-pi-shell.cmd` — keeps a launcher window with live logs and the Tailscale hint line; closing the window stops everything. The desktop "restart pi-shell" shortcut is also created by the installer.
 
 ## Phone access (Tailscale)
 
 Prerequisite: install [Tailscale](https://tailscale.com) on both the PC and the phone, signed into **the same account**.
 
-- **Path A (recommended, Windows)**: start via `scripts\start-pi-shell.cmd` — the script detects your tailnet and automatically listens dual-stack (`127.0.0.1` + `100.x` on the same port). On the phone, open the address shown in the `mobile over Tailscale:` line of the launcher window.
+- **Path A (recommended, Windows)**: start in tray mode or via `scripts\start-pi-shell.cmd` — the script detects your tailnet and automatically listens dual-stack (`127.0.0.1` + `100.x` on the same port). In console mode, open on the phone the address shown in the `mobile over Tailscale:` line of the launcher window; in tray mode (no visible window), use Path B to find the address.
 - **Path B (any platform / troubleshooting)**: run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tailscale-setup.ps1` — read-only dry-run by default, printing your tailnet address and a checklist; add `-Apply` only when you're sure, which adds a firewall rule (inbound TCP to the bridge port from `100.64.0.0/10` only, reversible).
 
 **Security boundary**: phone traffic stays on the encrypted tailnet and never touches the public internet; pi-shell binds `127.0.0.1` by default and refuses `0.0.0.0` outright (unless you explicitly set `PI_SHELL_ALLOW_LAN=1`).
@@ -171,16 +180,23 @@ They add up — 3 columns per page × multiple tabs → how many sessions can be
 </details>
 
 <details>
+<summary><b>Opening a huge old session hangs on "attaching" and then times out</b></summary>
+
+Typical for very old, message-heavy sessions. v1.1.0 raised the JSONL single-line cap from 8MiB to 32MiB, so the vast majority of sessions attach fine after upgrading; <code>pi_line_skipped reason=overlong</code> in the bridge log confirms a line over the cap. If a session still exceeds it, set <code>PI_SHELL_MAX_LINE_BYTES</code> (bytes, e.g. <code>67108864</code> = 64MiB) before starting.
+
+</details>
+
+<details>
 <summary><b>How do I update pi-shell</b></summary>
 
-<code>git pull</code> inside the clone, then restart (close the launcher window / Ctrl+C, start again). The bridge is stateless — an upgrade is just a swap.
+<code>git pull</code> inside the clone, then restart (tray right-click "Restart", or close the launcher window / Ctrl+C and start again). The bridge is stateless — an upgrade is just a swap.
 
 </details>
 
 <details>
 <summary><b>How do I uninstall</b></summary>
 
-Close the launcher window (or end the node process) and delete the clone folder. <code>~/.pi/agent</code> belongs to pi and is untouched.
+Tray right-click "Stop" (or close the launcher window / end the node process), run <code>powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-windows.ps1 -Remove</code> to remove the desktop shortcuts, then delete the clone folder. <code>~/.pi/agent</code> belongs to pi and is untouched.
 
 </details>
 
@@ -203,7 +219,7 @@ Developed and tested on Windows 11 + Node 24; other platforms are not systematic
 | **Troubleshoot / release / roll back** | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
 | **See what's in this release** | [`CHANGELOG.md`](CHANGELOG.md), [`RELEASE-NOTES.md`](RELEASE-NOTES.md), [`docs/WHATS-NEW.md`](docs/WHATS-NEW.md) |
 | **See proof it really ran** | [`scripts/evidence/`](scripts/evidence) (replayable scripts, fixture sessions only) |
-| **Bail out** | stop process → delete the clone → `git clone` again → `cd bridge && npm test` (expect 216/216) |
+| **Bail out** | stop process → delete the clone → `git clone` again → `cd bridge && npm test` (expect 223/223) |
 
 More background (Chinese): contract & measured facts (`docs/03-design.md`, the single source of truth), requirements & acceptance (`docs/02-prd.md`), decision log (`docs/05-decisions-and-open-questions.md`), glossary (`docs/00-glossary.md`), product brief (`docs/PRODUCT-BRIEF.md`), visual system (`docs/DESIGN-SYSTEM.md`).
 

@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node: ≥22.19](https://img.shields.io/badge/node-%E2%89%A522.19-green.svg)](https://nodejs.org)
-[![Tests: 216/216](https://img.shields.io/badge/tests-216%2F216-brightgreen.svg)](bridge/test)
+[![Tests: 223/223](https://img.shields.io/badge/tests-223%2F223-brightgreen.svg)](bridge/test)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-success.svg)](bridge/package.json)
 [![Platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-tested-informational.svg)](#常见问题)
 
@@ -114,18 +114,27 @@ node bridge/src/index.mjs
 
 ✓ **验证**：页面加载后，侧栏列出你 pi 的会话（按项目分组）。
 
-**Windows 一键方式**：双击（或命令行运行）`scripts\start-pi-shell.cmd`——
+**Windows 一键方式（推荐）**：跑一次安装器，在桌面生成带 LOGO 图标的 `pi-shell` 快捷方式（托盘模式）：
 
-- 单实例：已在跑就只打开浏览器，不起第二个；
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
+```
+
+之后双击桌面 **`pi-shell`** 快捷方式启动：
+
+- **托盘模式**：无常驻终端窗口；右下角托盘图标右键控制（打开页面 / 重启 / 停止），悬停可实时看引擎数（如 `引擎 2/4`）；
+- 单实例：托盘已在时再双击快捷方式不会起第二个桥（想回页面：托盘右键「打开页面」或直接访问 7788）；
 - 启动约 3 秒后自动打开浏览器；
 - 桥崩溃自动重启（1s / 2s / 4s 退避，5 分钟内最多 3 次）；
-- 关闭窗口即全部停止，无后台驻留。
+- 停止 = 托盘右键「停止」，无后台驻留。
+
+**控制台模式（调试入口）**：双击（或命令行运行）`scripts\start-pi-shell.cmd`——保留一个启动窗口，可看实时日志与 Tailscale 提示行；关闭窗口即全部停止。桌面上的「重启 pi-shell」快捷方式同样由安装器生成。
 
 ## 手机访问（Tailscale）
 
 前提：本机与手机都安装 [Tailscale](https://tailscale.com) 并用**同一账号**登录。
 
-- **路径 A（推荐，Windows）**：用 `scripts\start-pi-shell.cmd` 启动——脚本检测到本机在 tailnet 上就自动双栈监听（`127.0.0.1` + `100.x` 同端口）。手机浏览器打开启动窗口里 `mobile over Tailscale:` 提示的地址即可。
+- **路径 A（推荐，Windows）**：托盘模式 / `scripts\start-pi-shell.cmd` 启动——脚本检测到本机在 tailnet 上就自动双栈监听（`127.0.0.1` + `100.x` 同端口）。控制台模式下手机浏览器打开启动窗口里 `mobile over Tailscale:` 提示的地址即可；托盘模式看不到启动窗口时，用路径 B 查地址。
 - **路径 B（任意平台 / 排查）**：跑 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tailscale-setup.ps1`——默认只读（dry-run），打印本机 tailnet 地址与排查清单；确认需要时加 `-Apply` 才会添加防火墙入站规则（仅放行 `100.64.0.0/10` 到桥端口，可一键回滚）。
 
 **安全边界**：手机流量只走 tailnet 加密通道，不出公网；pi-shell 默认只绑 `127.0.0.1`，`0.0.0.0` 监听被直接拒绝（除非显式设置 `PI_SHELL_ALLOW_LAN=1`）。
@@ -171,16 +180,23 @@ pi --mode rpc           ← 使用你的 ~/.pi/agent（扩展/技能/模型/会�
 </details>
 
 <details>
+<summary><b>打开超大历史会话，一直「接管中」最后超时</b></summary>
+
+多见于消息很多的老会话。v1.1.0 已把 JSONL 单行上限从 8MiB 提高到 32MiB，升级后绝大多数会话可正常接管；桥日志里的 <code>pi_line_skipped reason=overlong</code> 可确认是单行超限。仍超限时，启动前设 <code>PI_SHELL_MAX_LINE_BYTES</code>（字节数，如 <code>67108864</code> = 64MiB）再启动。
+
+</details>
+
+<details>
 <summary><b>如何更新 pi-shell</b></summary>
 
-在 clone 目录里 <code>git pull</code>，然后重启（关掉启动窗口 / Ctrl+C，再重新启动）。桥无状态，升级即换新。
+在 clone 目录里 <code>git pull</code>，然后重启（托盘右键「重启」，或关掉启动窗口 / Ctrl+C 后再启动）。桥无状态，升级即换新。
 
 </details>
 
 <details>
 <summary><b>如何卸载</b></summary>
 
-关闭启动窗口（或结束 node 进程），然后删除整个 clone 目录。`~/.pi/agent` 属于 pi，不受影响。
+托盘右键「停止」（或关闭启动窗口 / 结束 node 进程），跑 <code>powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-windows.ps1 -Remove</code> 移除桌面快捷方式，然后删除整个 clone 目录。`~/.pi/agent` 属于 pi，不受影响。
 
 </details>
 
@@ -203,7 +219,7 @@ pi --mode rpc           ← 使用你的 ~/.pi/agent（扩展/技能/模型/会�
 | **排障 / 发布 / 回滚** | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
 | **这个版本有什么** | [`CHANGELOG.md`](CHANGELOG.md)、[`RELEASE-NOTES.md`](RELEASE-NOTES.md)、[`docs/WHATS-NEW.md`](docs/WHATS-NEW.md) |
 | **断言"真跑过"** | [`scripts/evidence/`](scripts/evidence)（可复核脚本，全部用夹具会话） |
-| **坏了怎么退** | 停进程 → 删 clone 目录 → 重新 `git clone` → `cd bridge && npm test`（应 216/216） |
+| **坏了怎么退** | 停进程 → 删 clone 目录 → 重新 `git clone` → `cd bridge && npm test`（应 223/223） |
 
 更多背景：契约与实测事实（`docs/03-design.md`，唯一事实来源）、需求与验收（`docs/02-prd.md`）、决策记录（`docs/05-decisions-and-open-questions.md`）、术语（`docs/00-glossary.md`）、产品定位（`docs/PRODUCT-BRIEF.md`）、视觉系统（`docs/DESIGN-SYSTEM.md`）。
 
