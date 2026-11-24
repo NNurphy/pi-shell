@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PiRpc, resolvePiInstall } from "./rpc.mjs";
+import { DEFAULT_MAX_LINE_BYTES, parseMaxLineBytes } from "./framing.mjs";
 import { SessionIndex, readSessionEntries } from "./sessions.mjs";
 import { deleteSessionFile } from "./session-delete.mjs";
 import { OriginStore, ToolWindowTracker, classifyOrigin, ORIGINS_FILE_NAME } from "./origins.mjs";
@@ -264,6 +265,19 @@ try {
 }
 
 /**
+ * JSONL 单行上限（framing.mjs）：默认 32MiB，PI_SHELL_MAX_LINE_BYTES（纯数字字节数）可覆盖。
+ * 非法/不可解析 → 回退默认并记 warn（不静默）。env 解析单入口：只有这里读，
+ * 经 createRpc 显式传给每条 PiRpc（rpc.mjs 自身不读 env）。
+ */
+const MAX_LINE_BYTES = (() => {
+  const parsed = parseMaxLineBytes(process.env.PI_SHELL_MAX_LINE_BYTES);
+  if (!parsed.ok) {
+    log("warn", "pi_max_line_bytes_invalid", { raw: parsed.raw, fallback: DEFAULT_MAX_LINE_BYTES });
+  }
+  return parsed.bytes;
+})();
+
+/**
  * S1（bg-continue）：把 pi 的状态变化同步到引擎池的生命周期上。
  *   - streaming（agent_start / disposition / get_state）→ 记本轮起点，池里不再按空闲回收；
  *   - idle（含 agent_settled）→ 清 pin 起点 + touch：再 linger 一个 idleMs 才回收。
@@ -284,6 +298,7 @@ function createRpc(engine, cwd) {
     installDir: PI.installDir,
     workspaceCwd: cwd,
     sessionsDir: SESSIONS_DIR,
+    maxLineBytes: MAX_LINE_BYTES, // JSONL 单行上限（env 单入口解析后的值，见上方 MAX_LINE_BYTES）
     extraArgs: process.env.PI_SHELL_EXTRA_ARGS || "",
     // 引擎级 MCP：空名单 → --no-mcp（全禁）；非空 → 用该引擎的临时 agentDir（只装选中的 server）
     noMcp: (engine.mcp ?? []).length === 0,
@@ -640,7 +655,7 @@ engineSweep.unref?.();
 // 历史（已落盘的 entry）仍由 session/open + entries?since 补齐；这里只补**未落盘的尾巴**（S2b）：
 //   - 每个引擎一份 SseTail + 自己的 seq 计数（跨引擎互不干扰 → 单引擎回放无空洞）；
 //   - **只缓冲「本轮已在流式中」的内容帧**（没有客户端也要缓冲，否则断线期间的事件回来后断片）：
-//     启动期/空闲期的帧、控制类帧一律不回放（历史回归：首屏把启动期的 setStatus 补给了新页面）；
+//     启动期/空闲期的帧、控制类帧一律不回放（v1.5 回归：首屏把启动期的 setStatus 补给了新页面）；
 //   - 数据帧带 `id: <seq>`，EventSource 断线自动重连会带 Last-Event-ID；
 //   - message_end 是落盘点 → 该帧广播后清空缓冲、baseSeq = 该帧 seq（此后内容走 entries）；
 //   - 会话身份变了（switch_session / new_session / 引擎重启）→ resetSseTail：

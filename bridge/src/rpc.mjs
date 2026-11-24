@@ -69,7 +69,7 @@ export class PiRpc extends EventEmitter {
    * @param {string} [opts.provider]      非空 → 追加 `--provider <p>`（引擎模型透传；空 = 沿用 pi 自身默认）
    * @param {string} [opts.model]         非空 → 追加 `--model <m>`（同上；不读写 settings.json）
    * @param {string} [opts.agentDirOverride] 非空 → 子进程 PI_CODING_AGENT_DIR 指向它（MCP shim 用）
-   * @param {number} [opts.maxLineBytes]  单行上限（默认 8MB）
+   * @param {number} [opts.maxLineBytes]  单行上限（默认 32MiB，见 framing.mjs；桥层经 PI_SHELL_MAX_LINE_BYTES 覆盖后显式传入）
    * @param {number} [opts.requestTimeoutMs] 请求超时（默认 30s）
    * @param {(level:string, event:string, fields?:object)=>void} opts.log
    */

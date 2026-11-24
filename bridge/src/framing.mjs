@@ -3,7 +3,26 @@
 // 因为 readline 会把 U+2028 / U+2029 当成行分隔符，而它们在 JSON 字符串里是合法内容）。
 // 纯函数式，无 IO，可单测。
 
-export const DEFAULT_MAX_LINE_BYTES = 8 * 1024 * 1024; // 单行上限 8MB，超限丢弃该行并记日志
+export const DEFAULT_MAX_LINE_BYTES = 32 * 1024 * 1024; // 单行上限 32MiB，超限丢弃该行并记日志
+// 2026-11-25 事故：旧值 8MiB，超大会话 get_entries 的 RPC 响应单行
+// 8,454,144 字节（全部 entries 装一行）超限被丢 → 桥等不到应答 → 30s 超时接管失败。上限只提高，
+// 「超限丢弃 + pi_line_skipped 日志」的保护底线不变；可用 PI_SHELL_MAX_LINE_BYTES 覆盖。
+
+/**
+ * 解析 PI_SHELL_MAX_LINE_BYTES 覆盖值：纯数字（正整数字节数）。
+ * 纯函数、不读 env——index.mjs 启动时读 env 调这里是唯一入口，非法值由它记 warn 回退。
+ * @param {string|undefined|null} raw 环境变量原始值
+ * @returns {{bytes:number, ok:boolean, raw:string}} ok=false 表示非法/不可解析 → 调用方回退默认并记 warn（不静默）
+ */
+export function parseMaxLineBytes(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return { bytes: DEFAULT_MAX_LINE_BYTES, ok: true, raw: text };
+  if (/^\d+$/.test(text)) {
+    const n = Number(text);
+    if (n > 0) return { bytes: n, ok: true, raw: text };
+  }
+  return { bytes: DEFAULT_MAX_LINE_BYTES, ok: false, raw: text };
+}
 
 /**
  * JSONL 行解码器。
