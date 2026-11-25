@@ -1,6 +1,6 @@
 // S2b 接线层单测：SSE 尾巴回放（真实桥 + 假 pi RPC CLI，不 spawn 真 pi、不占 7788、不碰真实会话）
 //
-// 覆盖（对应任务卡 DoD 1/2/3/4）：
+// 覆盖（对应验收项 1/2/3/4）：
 //   1) 每个数据帧带 `id: <seq>`；`?since=` 与 `Last-Event-ID` 都能命中（后者在截断用例里验）
 //   2) resume 帧在数据帧之前（含 {from,to,truncated}）；回放 seq 严格递增、无重复
 //   3) message_end 是落盘点：缓冲归零、baseSeq = 该帧 seq，再连不重放已落盘内容
