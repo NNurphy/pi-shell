@@ -1561,12 +1561,13 @@ async function handleEngineRestart(req, res, headerClient) {
     const ms = Date.now() - startedAt;
     const newPid = engine.rpc.snapshot().pid;
     if (sessionKept) {
-      const entriesData = await engine.rpc.request("get_entries").catch(() => null);
+      // 重连恢复的 leafId 也走文件直读（不该为一条 leafId 等 30s 的全量 RPC）
+      const leaf = await readAttachLeafId(engine, restoredFile, "engine-restart");
       broadcast(engine, {
         type: "session_attached",
         sessionFile: restoredFile,
         sessionId,
-        leafId: entriesData?.leafId ?? null,
+        leafId: leaf.leafId,
         ms,
       });
     } else if (sessionFile) {
@@ -1943,6 +1944,28 @@ function applySessionCwd(engine, cwd, sessionFile) {
   return cwd;
 }
 
+/**
+ * 接管/重连的 leafId：直读会话文件（与「只读浏览」同一个解析器 readSessionEntries）。
+ *
+ * 为什么：`get_entries` 的 RPC 响应是「一行装下全部 entries」，受 JSONL 单行上限
+ * 约束（framing.mjs：默认 32MiB，PI_SHELL_MAX_LINE_BYTES 可调小到 1MiB）。大会话（单个历史会话 8.7MiB、
+ * 87% 是 base64 图片，且会继续涨）超限就被整行丢弃 → 桥等 30s 后判 TIMEOUT → 接管失败；而
+ * 「只读浏览」因为本来就直读文件，始终能看 —— 这正是「内容能看、接管失败」的根因。
+ * 把接管落到同一条直读路径上，接管就与会话体积解耦；`get_entries` 只留给增量（?since=）/重放。
+ *
+ * 只用于「只要 leafId」的场景（attach / 重连恢复 / MCP 重启后恢复）：读失败记 warn + 返回 null，
+ * 不让一条 leafId 把已经成功的接管判死（state 来自 get_state，内容渲染走 open 的直读路径）。
+ */
+async function readAttachLeafId(engine, sessionFile, source) {
+  try {
+    const view = await readSessionEntries(sessionFile);
+    return { leafId: view.leafId, entries: view.entries.length };
+  } catch (err) {
+    log("warn", "attach_leafid_read_failed", { engine: engine.id, file: sessionFile, source, code: err?.code ?? null, reason: err?.message });
+    return { leafId: null, entries: 0 };
+  }
+}
+
 /** 后台接管：switch_session → get_state → SSE session_attached / session_attach_failed */
 async function attachSession(engine, sessionPath, token, { cancelledByPrecheck = false, reason = "" } = {}) {
   const rpc = engine.rpc;
@@ -1952,6 +1975,8 @@ async function attachSession(engine, sessionPath, token, { cancelledByPrecheck =
     log("warn", "session_attach_failed", { engine: engine.id, file: sessionPath, reason, ms: 0 });
     return;
   }
+  // v1.2.0：接管期间引擎看起来 idle 且可能没有 SSE → 标记 busy，防止 idle-sweep 把 switch_session 杀掉
+  engine.beginBusy();
   try {
     // 「离开旧会话」的这一刻就把尾巴清掉：此后产生的帧属于新会话（包括切换过程中已经开跑的那一轮，
     // 它是新会话的画面，不能丢）。放在 switch 之后清会把这份「本轮已开始」的头几帧也抹掉（bgUi A8）。
@@ -1972,21 +1997,24 @@ async function attachSession(engine, sessionPath, token, { cancelledByPrecheck =
     applySessionCwd(engine, sessionCwd, engine.extra.claim);
     // 重连恢复：接管成功就把「该客户端当前会话」记下来（引擎被回收后还能切回来）
     noteSessionForEngine(engine, state, engine.extra.cwd);
-    const entriesData = await rpc.request("get_entries");
+    // leafId 走文件直读 —— 接管主路径不再拉全量 get_entries（大会话会超单行上限 → 30s 超时）
+    const leaf = await readAttachLeafId(engine, engine.extra.claim, "attach");
     const ms = Date.now() - startedAt;
     broadcast(engine, {
       type: "session_attached",
       sessionFile: sessionPath,
       sessionId: state?.sessionId ?? null,
-      leafId: entriesData?.leafId ?? null,
+      leafId: leaf.leafId,
       ms,
     });
-    log("info", "session_attached", { engine: engine.id, sessionId: state?.sessionId ?? null, ms, entries: entriesData?.entries?.length ?? 0 });
+    log("info", "session_attached", { engine: engine.id, sessionId: state?.sessionId ?? null, ms, entries: leaf.entries, entriesVia: "file" });
   } catch (err) {
     if (token !== engine.extra.attachToken) return;
     const code = /working directory does not exist/i.test(err?.message || "") ? "CONFLICT" : err?.code || "PI_ERROR";
     broadcast(engine, { type: "session_attach_failed", sessionFile: sessionPath, code, reason: err?.message || "接管失败", ms: Date.now() - startedAt });
     log("warn", "session_attach_failed", { engine: engine.id, file: sessionPath, code, reason: err?.message, ms: Date.now() - startedAt });
+  } finally {
+    engine.endBusy();
   }
 }
 
@@ -2042,11 +2070,13 @@ async function adoptOrphanEngine(res, engine, orphan, sessionPath) {
     adopted.rpc.noteGetState(state);
     // 接管后引擎归属变了：重连恢复记录也跟着换个 client（否则新页面断开再回来会丢会话）
     noteSessionForEngine(adopted, state, adopted.extra?.cwd ?? null);
-    const entriesData = await adopted.rpc.request("get_entries");
+    // entries 走文件直读（与首次 open / 只读浏览同一解析器），不再拉 get_entries 全量 RPC
+    const view = await readSessionEntries(sessionPath);
     log("info", "session_open_adopted", {
       client: clientId,
       sessionId: state?.sessionId ?? null,
-      entries: entriesData?.entries?.length ?? 0,
+      entries: view.entries.length,
+      entriesVia: "file",
       state: adopted.rpc?.state ?? null,
     });
     sendJson(res, 200, {
@@ -2057,12 +2087,12 @@ async function adoptOrphanEngine(res, engine, orphan, sessionPath) {
       sessionId: state?.sessionId ?? null,
       sessionFile: sessionPath,
       state,
-      entries: entriesData?.entries ?? [],
-      leafId: entriesData?.leafId ?? null,
+      entries: view.entries,
+      leafId: view.leafId,
     });
     return true;
   } catch (err) {
-    // 接管成功但读不到状态（引擎刚崩）：不静默降级 —— 明确回 503，页面重试会走新建引擎的常规路径
+    // 接管成功但读不到状态/条目（引擎刚崩或文件不可读）：不静默降级 —— 明确回 503，页面重试会走新引擎路径
     log("warn", "session_open_adopt_failed", { client: clientId, reason: err?.code || err?.message });
     sendError(res, 503, "PI_NOT_READY", "接管后台引擎失败，请重试");
     return false;
@@ -2109,17 +2139,18 @@ async function handleSessionOpen(engine, req, res) {
     return;
   }
 
-  // 已附着同一个文件：直接 get_entries（不重复 switch，避免 3s 的 MCP 重启）
+  // 已附着同一个文件：只取状态 + 直读文件条目（不重复 switch，避免 3s 的 MCP 重启）
   const attachedFile = rpc?.lastGetState?.sessionFile ? path.resolve(rpc.lastGetState.sessionFile) : null;
   if (rpc && !rpc.failed && attachedFile === sessionPath && rpc.state !== "starting") {
     try {
       const state = await rpc.request("get_state");
       rpc.noteGetState(state);
-      const entriesData = await rpc.request("get_entries");
+      // entries 走文件直读（S4 权威重载也走这条）——不再拉 get_entries 全量 RPC
+      const view = await readSessionEntries(sessionPath);
       engine.extra.claim = sessionPath; // 复用：本引擎继续占用这个会话
       applySessionCwd(engine, await readSessionCwd(sessionPath), sessionPath); // cwd 真相回写（T2）
       noteSessionForEngine(engine, state, engine.extra.cwd); // 重连恢复：记住当前会话
-      log("info", "session_open_reused", { engine: engine.id, sessionId: state?.sessionId ?? null, entries: entriesData?.entries?.length ?? 0 });
+      log("info", "session_open_reused", { engine: engine.id, sessionId: state?.sessionId ?? null, entries: view.entries.length, entriesVia: "file" });
       sendJson(res, 200, {
         mode: "live",
         cancelled: false,
@@ -2127,8 +2158,8 @@ async function handleSessionOpen(engine, req, res) {
         sessionId: state?.sessionId ?? null,
         sessionFile: sessionPath,
         state,
-        entries: entriesData?.entries ?? [],
-        leafId: entriesData?.leafId ?? null,
+        entries: view.entries,
+        leafId: view.leafId,
       });
       return;
     } catch {
@@ -2517,6 +2548,20 @@ async function restoreModelAndThinking(engine, clientId, memory, state) {
 async function restoreEngineSession(engine, clientId, memory) {
   const sessionFile = memory?.path ?? null;
   if (!engine || !sessionFile) return;
+  // v1.2.0：恢复期间引擎看起来 idle 且可能没有 SSE（脚本/纯 API 客户端）→ 标记 busy：
+  // 否则 idleMs 短时 idle-sweep 会把正在 switch_session 的引擎 SIGTERM 掉，
+  // 恢复只能以 engine_restore_failed PI_NOT_READY 收场（claim 已回 200，客户端等不到 engine_restored）。
+  engine.beginBusy();
+  try {
+    await restoreEngineSessionInner(engine, clientId, memory);
+  } finally {
+    engine.endBusy();
+  }
+}
+
+async function restoreEngineSessionInner(engine, clientId, memory) {
+  const sessionFile = memory?.path ?? null;
+  if (!engine || !sessionFile) return;
   const startedAt = Date.now();
   const token = ++engine.extra.attachToken; // 与用户显式 open 共用取消令牌
   const rpc = engine.rpc;
@@ -2611,13 +2656,14 @@ async function restoreEngineSession(engine, clientId, memory) {
     // cwd 真相：会话 header 优先（T2 的 readSessionCwd 复用）；恢复时引擎本来就是按它起的
     const cwd = applySessionCwd(engine, await readSessionCwd(attached), attached) ?? engine.extra.cwd;
     state = await restoreModelAndThinking(engine, clientId, memory, state);
-    const entriesData = await rpc.request("get_entries").catch(() => null);
+    // 重连恢复的 leafId 走文件直读（大会话不再受单行上限约束，也不再等 30s 超时）
+    const leaf = await readAttachLeafId(engine, attached, "reconnect-restore");
     const ms = Date.now() - startedAt;
     broadcast(engine, {
       type: "session_attached",
       sessionFile: attached,
       sessionId: state?.sessionId ?? null,
-      leafId: entriesData?.leafId ?? null,
+      leafId: leaf.leafId,
       ms,
       restored: true,
     });

@@ -38,6 +38,9 @@ export class Engine {
     this.lastSeenAt = now; // 最近一次 SSE 活跃 / 请求
     // S1：本轮 streaming 的开始时间（pin 的起点）。null = 当前不在流式中。
     this.streamStartedAt = null;
+    // 在飞的桥侧异步操作（attach / 重连恢复的 switch_session 等）计数。
+    // 这些操作期间引擎看起来「idle 且无 SSE」，其实正在切换会话 —— 不许被空闲回收（v1.2.0）。
+    this.busyOps = 0;
     // N1-a：同一 clientId 可能被复制标签页共用。标签页标识（每页随机、不持久化）用来
     // 识别「同一 client 来自不同标签」：记录 tabs，最新认领的 tab 拿到控制权，旧 tab 可被拒绝。
     this.tabs = new Map(); // tabId → {firstSeen, lastSeen}
@@ -75,6 +78,23 @@ export class Engine {
   touch(now = Date.now()) {
     this.lastSeenAt = now;
     return this;
+  }
+
+  /** 有异步操作在飞（attach / 恢复）：期间既不算空闲、也不许被 sweep 回收（见 isAlive / sweep） */
+  get busy() {
+    return this.busyOps > 0;
+  }
+
+  /** 操作开始：计数 +1 并刷新活跃时间（操作开始本身就是活跃）。now 可注入（单测用假时钟） */
+  beginBusy(now = Date.now()) {
+    this.busyOps += 1;
+    return this.touch(now);
+  }
+
+  /** 操作结束：计数 -1（不会减成负数）并刷新活跃时间（结束的那一刻重新起算空闲窗口） */
+  endBusy(now = Date.now()) {
+    if (this.busyOps > 0) this.busyOps -= 1;
+    return this.touch(now);
   }
 
   /** S1：进入 streaming → 记本轮起点（只记第一次，重入不重置计时） */
@@ -206,6 +226,7 @@ export class EnginePool {
     if (!engine) return false;
     if (engine.pinned) return true;
     if (engine.state === "stopping") return false;
+    if (engine.busy) return true; // 在飞的 attach / 恢复：活着（否则会被当成空闲僵尸）
     if (engine.state === "streaming") return !this.pinExpired(engine, now);
     if (engine.sseCount() > 0) return true;
     return now - engine.lastSeenAt <= this.idleMs;
@@ -312,6 +333,9 @@ export class EnginePool {
     for (const engine of this.list()) {
       if (engine.state === "stopping") continue;
       if (engine.pinned) continue; // 引导引擎常驻（单引擎兼容）
+      // 在飞的 attach / 重连恢复：正在 switch_session，看起来 idle 却绝不能回收
+      // （v1.2.0 修：idleMs 短时会把恢复中的引擎 SIGTERM 掉 → engine_restore_failed PI_NOT_READY）
+      if (engine.busy) continue;
       if (engine.state === "streaming") {
         if (!this.pinExpired(engine, now)) continue; // 流式中不回收
         // 兜底：不静默降级 —— 明确记下「pin 到期被强收」，用户可在资源面板/日志里看到

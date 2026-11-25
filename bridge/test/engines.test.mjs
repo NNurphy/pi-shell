@@ -164,6 +164,47 @@ test("sweep：正在 stopping 的引擎不重复回收", () => {
   assert.deepEqual(pool.sweep(5000), []);
 });
 
+// v1.2.0：attach / 重连恢复在飞时引擎看起来 idle 且可能没有 SSE —— 不许被空闲回收。
+// 事故：把空闲回收阈值调短（IDLE_MS=3000）时，恢复的 switch_session 要 3.5-5s，
+// 5s 一轮的 idle-sweep 把正在恢复的引擎 SIGTERM 掉 → engine_restore_failed code=PI_NOT_READY。
+test("sweep：在飞操作（busy）的引擎不回收、isAlive 为 true；结束后重新起算空闲窗口", async () => {
+  let clock = 0;
+  const { pool } = makePool({ idleMs: 3000, now: () => clock });
+  const a = pool.getOrCreate("a");
+  a.touch(0);
+
+  clock = 3000;
+  a.beginBusy(3000); // 例如 restore 开始（switch_session 在飞）
+  clock = 20000; // 远超过 idleMs
+  assert.equal(a.busy, true);
+  assert.equal(pool.isAlive(a, clock), true, "busy 引擎必须算活着");
+  assert.deepEqual(pool.sweep(clock), [], "busy 引擎不得被回收");
+  assert.equal(pool.get("a"), a, "busy 期间引擎仍在池内");
+
+  clock = 21000;
+  a.endBusy(21000); // 操作结束 → 从这一刻起重新算 idleMs
+  assert.equal(a.busy, false);
+  assert.deepEqual(pool.sweep(21000), [], "刚结束还在 idleMs 内");
+
+  clock = 24001;
+  assert.deepEqual(pool.sweep(24001), ["a"], "结束超过 idleMs 后照常回收");
+  await new Promise((r) => setTimeout(r, 0)); // 让 release 的 stop 跑完
+  assert.equal(a.rpc.stopped, 1);
+});
+
+test("busy：嵌套计数（attach + restore 同时）不会提前解除；endBusy 不会减成负数", () => {
+  const engine = new Engine({ id: "a", rpc: fakeRpc() });
+  engine.beginBusy();
+  engine.beginBusy();
+  assert.equal(engine.busy, true);
+  engine.endBusy();
+  assert.equal(engine.busy, true, "还有一层在飞 → 仍 busy");
+  engine.endBusy();
+  assert.equal(engine.busy, false);
+  engine.endBusy();
+  assert.equal(engine.busy, false, "多余 endBusy 不减成负数");
+});
+
 test("sessionOwner：大小写不敏感 + 排除自己 + 认领中的占位也算", () => {
   const { pool } = makePool();
   const a = pool.getOrCreate("a");

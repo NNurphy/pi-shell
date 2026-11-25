@@ -60,11 +60,11 @@ rl.on("line", (line) => {
       sessionFile = msg.sessionPath;
       sessionId = path.basename(String(msg.sessionPath)).replace(/[.]jsonl$/i, "");
       return reply(msg, { cancelled: false });
+    // 接管分支（含孤儿接管）的 entries 走文件直读 —— 这条命令一律失败，防止回退到全量 RPC
     case "get_entries":
-      return reply(msg, {
-        entries: [{ type: "message", id: sessionId + "-u", message: { role: "user", content: [{ type: "text", text: "fixture" }] } }],
-        leafId: sessionId + "-u",
-      });
+      return process.stdout.write(
+        JSON.stringify({ type: "response", id: msg.id, command: msg.type, success: false, error: "get_entries must not be called on attach path" }) + "\\n",
+      );
     case "prompt":
       reply(msg, { disposition: "started" });
       streaming = true;
@@ -310,6 +310,9 @@ test("S3b：/api/session/open 孤儿接管（409 语义不变 + adopted:true + �
     assert.equal(adopted.json?.attach, "attached");
     assert.equal(adopted.json?.sessionFile, fixture.files.s1);
     assert.ok(Array.isArray(adopted.json?.entries) && adopted.json.entries.length > 0, "应带回该引擎的 entries");
+    // entries 来自会话文件（不是 get_entries RPC —— 上面的假 pi 已让它一律失败）
+    assert.deepEqual(adopted.json.entries.map((e) => e.id), ["s1-u"], "接管 entries 应来自会话文件");
+    assert.equal(adopted.json?.leafId, "s1-u", "leafId 应来自会话文件");
 
     const after = await health();
     // 「不增」的严格形式：本 client 的旧空闲引擎被 release（先 release 再 own），所以少 1 条而不是变多
