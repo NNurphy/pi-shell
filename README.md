@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node: ≥22.19](https://img.shields.io/badge/node-%E2%89%A522.19-green.svg)](https://nodejs.org)
-[![Tests: 223/223](https://img.shields.io/badge/tests-223%2F223-brightgreen.svg)](bridge/test)
+[![Tests: 226/226](https://img.shields.io/badge/tests-226%2F226-brightgreen.svg)](bridge/test)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-success.svg)](bridge/package.json)
 [![Platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-tested-informational.svg)](#常见问题)
 
@@ -20,7 +20,7 @@
 |:---:|:---:|
 | ![桌面单列亮色](docs/screenshots/real-desktop-light.png) | ![手机](docs/screenshots/real-mobile.png) |
 
-以上均为**真实运行截图**（由 [`scripts/evidence/`](scripts/evidence) 的取证脚本驱动夹具会话生成，非设计稿）；视觉规格见 [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md)。
+以上均为**真实运行截图**（由开发期取证脚本驱动夹具会话生成，非设计稿）；视觉规格见 [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md)。
 
 ## 它解决什么问题
 
@@ -71,6 +71,8 @@ node -v
 ```
 
 版本 ≥ **22.19** 即可。没有 Node？去 <https://nodejs.org> 安装（pi 的官方安装器在需要时也可以代装 Node）。
+
+> 本仓库只发布运行时（`bridge/`、`web/`）与安装脚本。开发期的测试套件与证据脚本（起假引擎、驱动浏览器抓图的那些）不上公仓——`bridge/test/` 下的单测是自带的，`cd bridge && npm test` 可复跑。
 
 ### Step 1 · 安装 pi
 
@@ -182,7 +184,7 @@ pi --mode rpc           ← 使用你的 ~/.pi/agent（扩展/技能/模型/会�
 <details>
 <summary><b>打开超大历史会话，一直「接管中」最后超时</b></summary>
 
-多见于消息很多的老会话。v1.1.0 已把 JSONL 单行上限从 8MiB 提高到 32MiB，升级后绝大多数会话可正常接管；桥日志里的 <code>pi_line_skipped reason=overlong</code> 可确认是单行超限。仍超限时，启动前设 <code>PI_SHELL_MAX_LINE_BYTES</code>（字节数，如 <code>67108864</code> = 64MiB）再启动。
+v1.2.0 起**接管不再依赖「一行装下整个会话」的 RPC**：打开 / 接管 / 断线恢复都直接读会话文件，会话多大都不影响接管速度（十几 MB 的老会话也在百毫秒级接上）。升级后仍卡在「接管中」的，先看桥日志有没有 <code>pi_line_skipped reason=overlong</code>：这只剩「单行超过 32MiB」一种可能，启动前设 <code>PI_SHELL_MAX_LINE_BYTES</code>（字节数，如 <code>67108864</code> = 64MiB）再启动即可。
 
 </details>
 
@@ -218,8 +220,8 @@ pi --mode rpc           ← 使用你的 ~/.pi/agent（扩展/技能/模型/会�
 | **验收**（跑什么、多久、判据） | [`docs/06-traceability-and-test.md`](docs/06-traceability-and-test.md) |
 | **排障 / 发布 / 回滚** | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
 | **这个版本有什么** | [`CHANGELOG.md`](CHANGELOG.md)、[`RELEASE-NOTES.md`](RELEASE-NOTES.md)、[`docs/WHATS-NEW.md`](docs/WHATS-NEW.md) |
-| **断言"真跑过"** | [`scripts/evidence/`](scripts/evidence)（可复核脚本，全部用夹具会话） |
-| **坏了怎么退** | 停进程 → 删 clone 目录 → 重新 `git clone` → `cd bridge && npm test`（应 223/223） |
+| **断言"真跑过"** | [`bridge/test/`](bridge/test)（单测全部用夹具会话，`cd bridge && npm test` 应 **226/226**） |
+| **坏了怎么退** | 停进程 → 删 clone 目录 → 重新 `git clone` → `cd bridge && npm test`（应 226/226） |
 
 更多背景：契约与实测事实（`docs/03-design.md`，唯一事实来源）、需求与验收（`docs/02-prd.md`）、决策记录（`docs/05-decisions-and-open-questions.md`）、术语（`docs/00-glossary.md`）、产品定位（`docs/PRODUCT-BRIEF.md`）、视觉系统（`docs/DESIGN-SYSTEM.md`）。
 

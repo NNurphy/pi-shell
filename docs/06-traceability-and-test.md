@@ -1,6 +1,8 @@
 # 06 · 追溯矩阵与测试细则
 
-版本 **v1.0.0**（2026-11-12，回填门禁套件与证据脚本；§1/§2/§3 原有条目未改口径）
+版本 **v1.2.0**（2026-11-25，回填 v1.2.0 门禁口径；§1/§2/§3 原有条目未改口径）
+
+> **公仓说明**：本仓库只带运行时与**单测**（`cd bridge && npm test`）。本节的 E2E 套件与证据脚本（`scripts/evidence/*`、`scripts/test-gate.mjs` 的 E2E 部分）属于开发期工具，不随公仓发布；它们作为验收口径的记录保留于此。
 
 ---
 
@@ -88,7 +90,7 @@
 
 ---
 
-## 3b. 首启黄金路径（`scripts/evidence/first-load.mjs`，B1~B7）
+## 3b. 首启黄金路径（开发期脚本 `first-load.mjs`，B1~B7；公仓不含）
 
 > 存在理由：v1.0.0 的 A 类断言只看 `el.hidden`，看不到「属性改了、画面没变」。
 > 本节的唯一口径是 **`getComputedStyle(el).display`**，且所有交互用 **CDP 真实鼠标/键盘事件**（`Input.dispatchMouseEvent` / `dispatchKeyEvent`），
@@ -115,14 +117,14 @@
 
 ---
 
-## 3c. 测试门套件（`node scripts/test-gate.mjs --full`，18 套件）
+## 3c. 测试门套件（`node scripts/test-gate.mjs --tier full`，开发期口径）
 
-> 发版主门：`--full` 按 `SUITES` 顺序全跑，任一 FAIL 不发版；迭代期用 `--only <名>` 定点复跑。
+> 发版主门：`--tier full` 按 `SUITES` 顺序全跑，任一 FAIL 不发版；迭代期用 `--only <名>` 定点复跑；不含桥核（`bridge/src`、`web/src`）改动的发版可用 `--tier patch` 轻量健康集。套件与证据脚本均为**开发期工具，公仓不发布**。
 > 环境口径：测试模型由 **`scripts/model-config.mjs`** 统一解析（会话顶栏所选模型 > `scripts/model.json`），`test-gate` 自动注入 `PI_SHELL_PROVIDER` / `PI_SHELL_MODEL`，**不要手工设**；MCP 一律用空配置（`PI_SHELL_MCP_CONFIG` 指向临时文件），会话目录用 `PI_SHELL_SESSIONS_DIR` 夹具，测试桥不占 7788。
 
-| # | 套件 | 脚本 | 端口 | 覆盖点 | 在 `--full` 内 |
+| # | 套件 | 脚本 | 端口 | 覆盖点 | 在 `--tier full` 内 |
 |---|---|---|---|---|---|
-| 1 | `unit` | `cd bridge && npm test` | — | 桥单测，**216 例**（v1.0.0 实测） | 是 |
+| 1 | `unit` | `cd bridge && npm test` | — | 桥单测，**226 例**（v1.2.0 实测） | 是 |
 | 2 | `firstLoad` | `first-load.mjs` | 7794 | 首启黄金路径 B0–B7（见 §3b） | 是 |
 | 3 | `composer` | `composer-e2e.mjs` | 7810 | C1–C5 键盘路径 / 气泡 / 滚动不抢 | 是 |
 | 4 | `origin` | `origin-ui.mjs` | 脚本默认 | 会话来源分类（user / agent / test） | 是 |
@@ -141,10 +143,10 @@
 | 17 | `bgUi` | `background-continue-ui.mjs` | **7836** | S4 前端真相——`lastSeq` 重连、`resume.truncated` 提示、settle 后按权威记录重载 | 是 |
 | 18 | `sessionHeader` | `session-header-follow-ui.mjs` | **7835** | 列头跟随——切列时顶栏（模型 / 思考级别 / MCP / 目录）跟随当前列会话，cwd 与 `session/view` 一致 | 是 |
 
-> **模型注入**：所有 E2E 套件走 **`scripts/model-config.mjs`** 统一注入（会话顶栏所选模型 > `scripts/model.json`），**依赖真实模型出字**。模型不可用会让套件假失败：`402 Insufficient Balance` 时引擎 471ms 返回空回合，表现为 `composer` / `multi` FAIL（不是代码回归）。排查先看 `.dev/logs/gate-*.log` 里的该套件末尾 4 行输出，再看 `402` / 余额。
+> **模型注入**：所有 E2E 套件走 **`scripts/model-config.mjs`** 统一注入（会话顶栏所选模型 > `scripts/model.json`），**依赖真实模型出字**。模型不可用会让套件假失败：`402 Insufficient Balance` 时引擎 471ms 返回空回合，表现为 `composer` / `multi` FAIL（不是代码回归）。排查先看门禁日志里该套件的末尾 4 行输出，再看 `402` / 余额。
 - 端口列的 5 个 **后加套件**端口来自 `scripts/test-gate.mjs` 的 `SUITES`（`test-gate` 用 `PI_SHELL_PORT` 注入）；其余未列端口的套件用脚本自身默认值，**都不占 7788**。
 
-- 每个 E2E 套件自报 `N/N PASS`；逐套件的实测数字以**当次门禁日志**为准（`.dev/logs/gate-*.log`；v1.0.0 实测：`unit` 216/216）。
+- 每个 E2E 套件自报 `N/N PASS`；逐套件的实测数字以**当次门禁日志**为准（v1.2.0 实测：`unit` 226/226）。
 - 门禁套件与独立证据脚本是**同一批脚本**：`sessionView` / `sseTail` / `bgContinue` / `bgUi` / `sessionHeader` 既在门禁内，也可单跑取证；`new-session-dir-api|ui`、`cwd-truth-api`、`tree-graph-ui`、`turn-changes-ui`、`tab-independence-ui`、`engines-resource-ui`、`parallel-ui`、`restart-ui` 等按需跑，不在发版主门内。
 
 ---

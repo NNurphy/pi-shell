@@ -1,8 +1,10 @@
 # RUNBOOK · 运行 / 排障 / 发布 / 回滚
 
-> 适用范围：pi-shell v1.0.0（Windows 11 + Node 24 + pi 1.5.0）
-> 最后更新：2026-11-12（核对计数与模型注入口径）
+> 适用范围：pi-shell v1.2.0（Windows 11 + Node 24 + pi 1.5.0）
+> 最后更新：2026-11-25（v1.2.0：接管直读、忙碌期不回收；证据脚本不随公仓发布）
 > 维护者：开发 Agent（下一任）
+
+> **公仓说明**：本仓库只带运行时、单测与安装/运维脚本。发版用的端到端套件与证据脚本（`scripts/evidence/*` 与 `scripts/test-gate.mjs` 的 E2E 套件）属于开发期工具，**不随公仓发布**——下文提到它们的行是开发期记录，在公仓里跑不起来是预期行为（`scripts/smoke-check.mjs`、`scripts/rotate-logs.mjs`、`scripts/make-icon.mjs` 等运维脚本是自带的）。
 
 ---
 
@@ -11,16 +13,16 @@
 | 目的 | 命令（项目根执行） | 耗时（实测） |
 |---|---|---|
 | 启动 | 双击桌面 `pi-shell.lnk` 或 `node bridge/src/index.mjs` | 1–2s 就绪 |
-| 单元测试 | `cd bridge && npm test` | 秒级（216 例，v1.0.0 实测） |
-| 单条证据 | `node scripts/evidence/<name>.mjs` | 30–130s（m1a/m2a 约 90–120s） |
-| 全量照妖镜 | `node scripts/smoke-check.mjs` | 2–4 min（A-01~A-08 + N） |
-| **首启黄金路径** | `node scripts/evidence/first-load.mjs`（独占 7794 端口） | 20–40s（12 项；真实鼠标/键盘 + `getComputedStyle`） |
-| **分层测试门（发版门）** | `node scripts/test-gate.mjs --full` | 8–15 min（**18 套件**：unit 216 例 + 其余 17 个 E2E 套件，全绿才发版；测试模型由 `scripts/model-config.mjs` 自动注入，**无需**手工设 `PI_SHELL_PROVIDER` / `PI_SHELL_MODEL`） |
-| 定点复跑 | `node scripts/test-gate.mjs --only composer,layout` | 单套件 30–180s |
+| 单元测试 | `cd bridge && npm test` | 秒级（226 例，v1.2.0 实测） |
+| 单条证据 | `node scripts/evidence/<name>.mjs`（**开发期工具，公仓不含**） | 30–130s（m1a/m2a 约 90–120s） |
+| 全量照妖镜 | `node scripts/smoke-check.mjs`（自带；需本机桥已在跑） | 2–4 min（A-01~A-08 + N） |
+| **首启黄金路径** | `node scripts/evidence/first-load.mjs`（独占 7794 端口，**公仓不含**） | 20–40s（12 项；真实鼠标/键盘 + `getComputedStyle`） |
+| **分层测试门（发版门）** | `node scripts/test-gate.mjs --tier full`（**开发期门禁，需未发布的 E2E 套件**） | 8–15 min（全绿才发版；测试模型由 `scripts/model-config.mjs` 自动注入，**无需**手工设 `PI_SHELL_PROVIDER` / `PI_SHELL_MODEL`） |
+| 定点复跑 | `node scripts/test-gate.mjs --only unit` | 单套件 30–180s |
 | **日志整理** | `node scripts/rotate-logs.mjs --dry-run`（去掉 `--dry-run` 才落盘） | < 1s |
-| 全量证据 | 依次 m0 → m1-sessions → m1a → m1b → m1c → m2a → m2b → m2c-prefs → p0 | 10–15 min |
-| 2h 稳定性 | `node scripts/evidence/m1d-stability.mjs --hours 2 --interval-min 5 --port 7793 --out <dir>`（**分离进程**启动） | 2h |
-| 真实任务 | `node scripts/evidence/m2c-real-task.mjs --only task1`（再 `--only task2`，最后 `--check`） | 各 0.5–2 min |
+| 全量证据 | 依次 m0 → m1-sessions → m1a → m1b → m1c → m2a → m2b → m2c-prefs → p0（**开发期工具，公仓不含**） | 10–15 min |
+| 2h 稳定性 | `node scripts/evidence/m1d-stability.mjs --hours 2 --interval-min 5 --port 7793 --out <dir>`（**分离进程**启动；公仓不含） | 2h |
+| 真实任务 | `node scripts/evidence/m2c-real-task.mjs --only task1`（再 `--only task2`，最后 `--check`；公仓不含） | 各 0.5–2 min |
 
 > 长时测量必须在一开始就以**分离进程**启动，不要挂在工具调用里等。
 
@@ -105,8 +107,8 @@ Get-ChildItem logs | Sort-Object Length -Descending | Select-Object Name, Length
 > **硬门禁**：发 `x.Y.0` 前必须同步 **`docs/ARCHITECTURE.md`（版本号 + 新增机制）**、**`docs/USER-GUIDE.md`（新功能 / 新快捷键 / 排障）**、**`docs/WHATS-NEW.md`（新增一节，用户语言）**、**`RELEASE-NOTES.md`**、**`CHANGELOG.md`**；**缺一项不得 tag**。
 > 维护约定：每次小版本（`x.Y.0`）都要走这一步；只有补丁版（`x.y.Z`）可以只更新 CHANGELOG + RELEASE-NOTES（仍建议顺手修文档里已经过时的说明）。
 
-1. `cd bridge && npm test` → 全绿（v1.0.0 实测：**216/216**）。
-2. `node scripts/test-gate.mjs --full` → **18/18 套件全绿**（unit 216 例 + 其余 17 个 E2E 套件逐项 PASS；任一 FAIL 不发版，这是主门）。
+1. `cd bridge && npm test` → 全绿（v1.2.0 实测：**226/226**）。
+2. `node scripts/test-gate.mjs --tier full` → **21/21 套件全绿**（unit 226 例 + 其余 E2E 套件逐项 PASS；任一 FAIL 不发版，这是主门。**需开发期 E2E 套件，公仓不含**）。
    测试模型统一由 `scripts/model-config.mjs` 解析（会话顶栏所选模型 > `scripts/model.json`），`test-gate` 自动注入，**不要**再手工设 `PI_SHELL_PROVIDER` / `PI_SHELL_MODEL`（手工值会掩盖模型不可用的真问题）。套件清单见 `docs/06-traceability-and-test.md` §3c。
 3. `node scripts/smoke-check.mjs` → 全绿（N-03 用最近一次 2h 采样 CSV）。
 4. **文档同步（缺一项不得 tag）**：
@@ -115,13 +117,13 @@ Get-ChildItem logs | Sort-Object Length -Descending | Select-Object Name, Length
    - `docs/WHATS-NEW.md`：**顶部新增一节**（3–6 条用户语言的变化 + 一条升级注意），不写模块名/函数名；
    - `RELEASE-NOTES.md`：本次版本的能力 / 限制 / 升级注意（写在文件顶部，旧版本保留在下）；
    - `CHANGELOG.md`：顶部加 `## vX.Y.Z · 日期`。
-   - 截图引用只能指向 `docs/evidence/` 下**已存在**的文件；新增截图先跑对应证据脚本落盘再复制进来。
+   - 截图引用只能指向 `docs/screenshots/` 或 `docs/evidence/` 下**已存在**的文件；新增截图先落盘再复制进来。
 5. `git tag -a vX.Y.Z -m "<一句摘要>"`。
 
 > **5b. 发版后回头核对**：本文件与 `docs/06-traceability-and-test.md` 里的套件数 / 断言数 / 环境变量是否仍成立（发现过期计数即视为发版未完成）。
 
-6. `node scripts/evidence/first-load.mjs` → 12/12（首屏可见性回归门，v1.0.0 事故的根因在这里，**不许省**）。
-7. 归档（可选）：`git bundle create ~/pi-shell/.dev/backups/pi-shell-vX.Y.Z.bundle --all`。
+6. `node scripts/evidence/first-load.mjs` → 12/12（首屏可见性回归门，v1.0.0 事故的根因在这里，**不许省**；开发期脚本，公仓不含）。
+7. 归档（可选）：`git bundle create <备份目录>/pi-shell-vX.Y.Z.bundle --all`。
 
 ---
 
@@ -129,18 +131,18 @@ Get-ChildItem logs | Sort-Object Length -Descending | Select-Object Name, Length
 
 1. 停桥（`Ctrl+C` 或按端口 PID `taskkill /PID <pid> /F`）。
 2. 删除 `~/pi-shell`；删除桌面 `pi-shell.lnk`。
-3. 从 bundle 恢复：`git clone ~/pi-shell/.dev/backups/pi-shell-vX.Y.Z.bundle ~/pi-shell`
-4. `cd bridge && npm test` → 以**该版本 tag 的实测结果**为准；重建快捷方式（见 `scripts/evidence/m2c-prefs-shortcut.mjs` 内命令）。
+3. 从 bundle 恢复：`git clone <备份目录>/pi-shell-vX.Y.Z.bundle ~/pi-shell`
+4. `cd bridge && npm test` → 以**该版本 tag 的实测结果**为准；重建快捷方式（跑 `scripts\setup-windows.ps1`）。
 5. `~/.pi/agent` 无需恢复（本项目不写；pi 自身写 `settings.json`/`models-store.json`/`state/`/`sessions/`/`logs/`）。
 
 ---
 
 ## 5. 发布前检查（逐条打勾）
 
-- [ ] `cd bridge && npm test`（v1.0.0 实测：216/216）
-- [ ] `node scripts/test-gate.mjs --full`（18/18 套件全绿）
-- [ ] `node scripts/smoke-check.mjs`（15/15，含 N-03 采样）
-- [ ] 6 个基线套件（**已核对 2026-11-12：均未被 `test-gate` 的 `SUITES` 收录，仍需手动跑，无重复项可删**）：`git-diff-ui`(13) `new-session-ui`(11) `switch-confirm-ui`(13) `m1a-list-render`(35) `m2b-git-stats-filter`(18) `m2c-prefs-shortcut`(9) —— 括号内是**正常路径断言数**（源码实算：`check(...)` 调用点 − 仅失败分支 `check(..., false, ...)`；2026-11-12 实算：13/11/13/35/18/9，与本节一致；6 个脚本都在 `scripts/evidence/`，该目录共 45 个脚本）
+- [ ] `cd bridge && npm test`（v1.2.0 实测：226/226）
+- [ ] `node scripts/test-gate.mjs --tier full`（21/21 套件全绿；需开发期 E2E 套件）
+- [ ] `node scripts/smoke-check.mjs`（15/15，含 N-03 采样；自带脚本，需桥在跑）
+- [ ] 基线套件（未收进 `test-gate` 的 `SUITES`、仍需手动跑的那几个）：`git-diff-ui` `new-session-ui` `switch-confirm-ui` `m1a-list-render` `m2b-git-stats-filter` `m2c-prefs-shortcut`——均在 `scripts/evidence/`（开发期目录，公仓不含），断言数以该版本脚本实算为准
 - [ ] **真人走一遍**：双击桌面快捷方式 → 浏览器自动打开 → 首屏无浮层 → 开/关设置 → Ctrl+K / Esc → 刷新仍正常
 - [ ] 卸载演练（bundle → zip → 删 → 验证 → 恢复 → npm test）
 - [ ] 文档同步（**x.Y.0 必做，缺一项不得 tag**）：01/02 变更记录 / 03 契约与限制 / 04 工时 / **ARCHITECTURE** / **USER-GUIDE** / **WHATS-NEW** / CHANGELOG / RELEASE-NOTES

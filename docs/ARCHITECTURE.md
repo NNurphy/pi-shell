@@ -1,7 +1,7 @@
 # ARCHITECTURE · 架构与代码地图
 
-> 适用范围：**pi-shell v1.0.0**（bridge + 原生 ESM 前端，运行于本机官方 pi 1.5.0）
-> 最后更新：2026-11-14（含重连恢复会话——桥侧记忆 + 落盘持久化 + 前端重新接管，§13.7）
+> 适用范围：**pi-shell v1.2.0**（bridge + 原生 ESM 前端，运行于本机官方 pi 1.5.0）
+> 最后更新：2026-11-25（接管/重连的初始 entries 改桥直读会话文件 —— 与会话体积解耦，§13.8）
 > 维护者：开发 Agent（下一任）
 >
 > **维护约定**：每次小版本发版（`x.Y.0`）必须更新本文的版本号与新增机制小节（见 `docs/RUNBOOK.md` §3）。
@@ -200,7 +200,7 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 |---|---|---|
 | `index.mjs` | HTTP 路由、静态、SSE 广播与尾巴回放、会话打开两段式编排（含孤儿接管）、会话视图、新会话选目录、引擎重启、本轮改动接线、绑定启动、日志 | `main()`、`broadcast(engine, payload)`、`resolveOpEngine()`、`handleEngineRestart()`、`handleSessionView()`、`handleNewSession()`、`restartEngineForCwd()`、`adoptOrphanEngine()`、`resetSseTail()` |
 | `log.mjs` | 日志按大小轮转：写前检查、启动整理其它日志、手动脚本共用同一套实现 | `rotateIfNeeded()` / `rotateIfNeededAsync()` / `appendWithRotation()` / `resolveLogLimits()` / `DEFAULT_ROTATE_FILES` |
-| `engines.mjs` | 引擎池与生命周期（pin / 接管） | `EnginePool`（`getOrCreate/own/release/sweep/sessionOwner/adoptable/adopt/liveCount`）、`Engine.noteStreaming/noteSettled`、`MAX_PIN_MS`、`DEFAULT_ADOPT_GRACE_MS`、`resolveMaxEngines()`、`DEFAULT_MAX_ENGINES=4`、`DEFAULT_IDLE_MS=60000` |
+| `engines.mjs` | 引擎池与生命周期（pin / busy / 接管） | `EnginePool`（`getOrCreate/own/release/sweep/sessionOwner/adoptable/adopt/liveCount`）、`Engine.noteStreaming/noteSettled/beginBusy/endBusy`（`busy` 期间 `isAlive` 为真、不参与 `sweep`）、`MAX_PIN_MS`、`DEFAULT_ADOPT_GRACE_MS`、`resolveMaxEngines()`、`DEFAULT_MAX_ENGINES=4`、`DEFAULT_IDLE_MS=60000` |
 | `rpc.mjs` | spawn + JSONL 请求配对 + 握手 + 崩溃退避重启 | `PiRpc`（`request()`、`args()`：`--mode rpc` / `--session-dir` / `--no-mcp`、`env()`：`PI_CODING_AGENT_DIR`） |
 | `framing.mjs` | 只按 `\n` 切分、半行缓冲、单行上限 32MiB 丢弃（`PI_SHELL_MAX_LINE_BYTES` 覆盖，非法值回退默认并记 warn） | `parseRecord()` / `FrameSplitter` / `parseMaxLineBytes()` |
 | `sse-tail.mjs` | SSE 尾巴缓冲：按 seq 保存未落盘帧，供断线/接管回放（不重复、不乱序） | `SseTail`（`push/reset/since`）、`DEFAULT_MAX_BYTES=2MB`、`DEFAULT_MAX_FRAME_BYTES=512KB` |
@@ -240,7 +240,7 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 | `make-icon.mjs` | favicon.svg → 两个 .ico（浅/深色，16/32/48/256），Edge headless 截图 + PNG-in-ICO 拼装，零 npm 依赖 |
 | `restart-pi-shell.cmd` / `.ps1` | 桌面「重启 pi-shell」快捷方式 |
 | `tailscale-setup.ps1` | 打印 `100.x` 地址与排查清单；`-Apply` 只加一条仅 100.64.0.0/10 的入站规则 |
-| `test-gate.mjs` | 分层发版门（`--full` = 13 套件 / 300 断言） |
+| `test-gate.mjs` | 分层发版门（`--tier patch` = 轻量健康集 / `--tier full` = 全量；需开发期 E2E 套件，公仓不含） |
 | `smoke-check.mjs` | 照妖镜（A-01~A-08 + N） |
 | `evidence/*.mjs` | 证据脚本（截图 + 断言）；全部用 78xx/79xx 端口 + 夹具会话，**不碰真实桥 7788** |
 
@@ -266,17 +266,18 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 5. **默认分组收起**：每次打开页面侧栏分组不自动展开；同 cwd 的 agent 分组与主组合并，不出现两个同名分组。
 6. **新会话不落盘**：发第一条消息前没有 `.jsonl`（列表里不会出现，`fork/clone` 也会被 pi 拒绝）。
 7. **"看"走读文件，"接管"才 `switch_session`**：读文件渲染零副作用；接管才碰引擎（默认无 MCP 时 ≈0.2s，勾了 MCP 回退到 1–3s）。
-8. **JSONL 只按 `\n` 切分**（禁 `readline`，U+2028/2029 会误判）；单行上限 32MiB（`PI_SHELL_MAX_LINE_BYTES` 可调；旧值 8MiB 曾把超大会话的 get_entries 响应整行丢弃 → 30s 超时接管失败，v1.1.0 提高），超限丢弃不中断。
+8. **JSONL 只按 `\n` 切分**（禁 `readline`，U+2028/2029 会误判）；单行上限 32MiB（`PI_SHELL_MAX_LINE_BYTES` 可调），超限丢弃不中断。**接管/重连的初始 entries 不看这条上限**：`attachSession` / `restoreEngineSession` / `handleEngineRestart` / 孤儿接管 / 复用路径一律由桥直读会话文件（§13.8），`get_entries` 只留给 `?since=` 增量与回合结束的权威重载。
 9. **不能 `spawn("pi")`**：Windows 下必须 `spawn(process.execPath, [cli.js, …])`；`.cmd` 退路不实现。
 10. **stdout 只放协议数据**；日志写文件，仅 TTY 时镜像 stderr（非 TTY 不写，避免 Windows 管道同步写阻塞）。
 11. **文件和 Git 只读**，路径 `resolve`+`realpath` 双校验，不写 `index.lock`。
-12. **证据脚本零真实会话写入**：全部用 78xx/79xx 端口 + 夹具会话/夹具 agentDir，真实桥（7788）与 `~/.pi/agent` 全程不碰。
+12. **证据脚本零真实会话写入**：全部用 78xx/79xx 端口 + 夹具会话/夹具 agentDir，真实桥（7788）与 `~/.pi/agent` 全程不碰（这类脚本属于开发期工具，不随公仓发布）。
 13. **`0.0.0.0` 默认拒绝**；Tailscale 模式必须双栈（只绑 `100.x` 会让 `127.0.0.1` 失效，这是 Q2 修过的回归）。
 14. **fork 仅 user 节点**；嵌套工具调用（`parentToolCallId`）不进会话文件，历史会话无法重建嵌套。
 15. **`health.engines[].mcp` 是 server 名单数组**（如 `["codegraph"]`）。
 16. **流式中的引擎不被空闲回收**（S1）：只要 `state==="streaming"` 就算活着；只有超过 `MAX_PIN_MS`（2h）才允许强收（日志 `engine_pin_expired`）。显式 `abort` / `release` / 切会话 / 新建会话 / 改 MCP **不受 pin 保护**。
 17. **SSE 尾巴只回放未落盘部分**：回放起点 = `max(since, baseSeq)+1`；`message_end` 落盘即 `reset`；只缓冲 `streaming` 期间的内容帧，控制帧（`bridge_state` / `resync` / `session_attached*` / `extension_ui_request`）与启动期帧不进缓冲；超 `PI_SHELL_TAIL_MAX_BYTES`（2MB）或单帧 >512KB → `truncated`。
 18. **接入（adopt）不 reset 尾巴、不重建 MCP shim**；且必须**先 release 再 own**（同 clientId 覆盖会静默丢旧引擎）。
+19. **接管/恢复期间引擎算「忙」**（`Engine.beginBusy/endBusy`）：忙碌期间 `isAlive` 为真、不被 `sweep` 回收（否则 `switch_session` 在飞时看起来 idle 又无 SSE，会被当僵尸 SIGTERM → `engine_restore_failed code=PI_NOT_READY`）。可嵌套计数，`endBusy` 不会减成负数，结束时刷新 `lastSeenAt` 重新起算空闲窗口。
 19. **会话 cwd 的真相是会话 header**：`attach` / `new_session` / 引擎重启后回写到 `engine.extra.cwd`；顶栏只读 `GET /api/session/view?client=<本列>`，不再拼四个端点。
 
 ---
@@ -287,8 +288,9 @@ pi 1.5.0 **没有**"按 server 选择性加载"的开关（`docs/03` H-16）：
 
 | 版本 | 主题 | 说明 |
 |---|---|---|
+| v1.2.0 | 接管与会话体积解耦 | 接管/重连/恢复的初始 entries 改桥直读会话文件（`entriesVia=file`），`get_entries` 只留给 `?since=` 增量与权威重载；接管/恢复期间引擎标记 `busy` 不被空闲回收；`bridge` 单测 226/226 |
 | v1.1.0 | 桌面化 + 超大会话接管修复 | LOGO 图标与快捷方式安装器（`setup-windows.ps1`）、系统托盘模式（`tray-pi-shell.ps1`）、JSONL 单行上限 8MiB→32MiB（`PI_SHELL_MAX_LINE_BYTES` 可调）；`bridge` 单测 223/223 |
-| v1.0.0 | 首个公开发布 | 多列并行、SSE 断线重连与恢复、后台不中断、会话记忆持久化、MCP 按需、树视图与本轮改动面板、模型配置 UI；`bridge` 单测 216/216、`test-gate --full` 20 套件可复核 |
+| v1.0.0 | 首个公开发布 | 多列并行、SSE 断线重连与恢复、后台不中断、会话记忆持久化、MCP 按需、树视图与本轮改动面板、模型配置 UI；`bridge` 单测 216/216 |
 
 口径必读（v1.0.0 的几条约定）：
 
@@ -413,7 +415,24 @@ streaming 超过 MAX_PIN_MS（2h）→ 允许回收并记 warn engine_pin_expire
 
 **已知边界**：同一 `clientId` 才命中（标签页身份自愈会换 clientId）；第一条消息落盘前没有会话文件，无法恢复（H-5）。
 
-### 13.8 限制（照实写）
+### 13.8 接管初始 entries 走桥直读（v1.2.0）
+
+**问题**：接管原本需要一次 `get_entries` 全量 RPC——它的响应是「一行装下全部 entries」，受 JSONL 单行上限约束。会话一大（长历史 + 图片 base64）就超限被整行丢弃 → 桥等 30s 判 `TIMEOUT` → 「列表里能看见、点进去接不上」；而「只读浏览」因为本来就直读文件，始终能看——这就是「内容能看、接管失败」的根因。
+
+**口径**：
+
+| 路径 | 内容来源 |
+|---|---|
+| `open`（view + 后台接管） | `get_state` 只供状态；entries / leafId 直读会话文件 |
+| 孤儿接管（adopt） | 直读会话文件（与只读浏览同一解析器 `readSessionEntries`） |
+| 复用路径（已附着同一文件，S4 权威重载也走它） | 直读会话文件 |
+| 重连恢复（`restoreEngineSession`） | leafId 直读会话文件 |
+| 引擎重启（`handleEngineRestart`） | leafId 直读会话文件 |
+| `?since=` 增量 / 重放 / 回合结束权威重载 | 仍用 `get_entries`（增量小，不装全会话） |
+
+**失败不判死**：直读取不到 leafId 时只记 `warn attach_leafid_read_failed` 并回 `leafId:null`——接管本身已成功（`get_state` 已换会话），不因一条 leafId 回退到 30s 全量 RPC。日志带 `entriesVia:"file"` 便于确认走的哪条路。
+
+### 13.9 限制（照实写）
 
 - **桥进程重启仍会丢回合**：优雅退出会 `releaseAll` 全部引擎（SIGKILL 时 pi 子进程可能变孤儿，老问题）。当前版本只解决「标签页关闭 / 断线 / 切走」。
 - 后台回合若恰好卡在扩展权限确认：无 SSE 10s 后自动 `cancelled:true`（`EXT_CANCEL_AFTER_MS`，未改）。
@@ -433,5 +452,5 @@ streaming 超过 MAX_PIN_MS（2h）→ 允许回收并记 warn engine_pin_expire
 | 运行 / 排障 / 发布 / 回滚 | `docs/RUNBOOK.md` |
 | 视觉与组件规范 | `docs/DESIGN-SYSTEM.md`、`docs/design/LAYOUT.md`、`docs/design/TREE-DISPLAY.md` |
 | 变更明细 | `CHANGELOG.md`、`RELEASE-NOTES.md` |
-| 验收证据脚本 | `scripts/evidence/` |
+| 验收 | `cd bridge && npm test`（单测，纯夹具）；端到端套件与证据脚本为开发期工具，不随公仓发布 |
 

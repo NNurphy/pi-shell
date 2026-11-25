@@ -3,6 +3,24 @@
 > 适用范围：pi-shell 发布记录
 > 维护约定：格式 `## vX.Y.Z · YYYY-MM-DD`，只记"能力 / 限制 / 不兼容变更"，细节见 `RELEASE-NOTES.md`。
 
+## v1.2.0 · 2026-11-25
+
+**接管与会话体积解耦**：打开 / 接管 / 断线恢复不再走「一行装下整个会话」的引擎 RPC，改成桥直接读会话文件——十几 MB 的历史会话在百毫秒级接上，「大会话接手超时」这条根因被整体移除；恢复中的会话也不会再被后台空闲回收误杀。
+
+### 能力
+
+1. **接管直读会话文件**：此前接管要请引擎把「全部 entries」序列化成一行返回，会话一大就撞上 JSONL 单行上限，桥只能等到超时才判失败——于是出现「列表里看得见、点进去接不上」。现在引擎只负责报状态，内容一律由桥读会话文件（与「只读浏览」同一个解析器）：打开、后台接管、断线重连、桥重启后的会话恢复、在同一会话上再次打开，五条路径全部改走直读。会话体积从此与接管耗时无关；`get_entries` 只保留给「补未落盘尾巴（`?since=`）」与「回合结束的权威重载」。直读取不到叶子节点时只记一条 warn 并照常接管（不把一次成功切换判死），日志新增 `entriesVia=file` 便于确认走的哪条路。
+2. **恢复期不被空闲回收**：`switch_session` 在飞的那几秒，引擎既没有活跃的 SSE、状态又是 idle，此前可能被后台空闲扫描当成僵尸进程回收——客户端拿到「已受理」却等不到恢复完成，只能看到失败。现在桥侧把「接管 / 恢复在飞」计入忙碌状态：忙碌期间既不算空闲、也不参与回收，操作结束的那一刻重新起算空闲窗口（可嵌套，重复结束不会把计数减成负数）。
+
+### 限制（明确不承诺的）
+
+- 单行仍超 32MiB 的极端会话，`?since=` 增量补齐与权威重载依旧受单行上限约束（接管本身已不受影响），需调 `PI_SHELL_MAX_LINE_BYTES`。
+- 关列后约 30s 内回来同会话仍 `409`（孤儿接管静默门槛未变）。
+
+### 测试
+
+- `cd bridge && npm test` → **226/226**（`node --test`，纯夹具，不碰真实 `~/.pi/agent`；本版新增 3 条：假 pi 的 `get_entries` 一律失败时，接管 / 重连仍能带回文件 entries 与正确叶子节点；忙碌态引擎不被回收、`isAlive` 为真、结束后重新起算空闲窗口；忙碌计数可嵌套且不会减成负数）。
+
 ## v1.1.0 · 2026-11-25
 
 **桌面化 + 超大会话接管修复**：LOGO 图标、一键快捷方式与托盘模式，打开超大历史会话不再超时。
@@ -21,7 +39,7 @@
 ### 测试
 
 - `cd bridge && npm test` → **223/223**（`node --test`，纯夹具，不碰真实 `~/.pi/agent`；本版新增 7 条：32MiB 默认值、`PI_SHELL_MAX_LINE_BYTES` 合法 / 非法 / 超限场景等）。
-- 新增证据脚本：[`scripts/evidence/logo-shortcut.mjs`](scripts/evidence/logo-shortcut.mjs)（图标与快捷方式 7 项断言）、[`scripts/evidence/tray-host.mjs`](scripts/evidence/tray-host.mjs)（托盘 8 项断言，夹具端口独立）、[`scripts/evidence/oversize-entries.mjs`](scripts/evidence/oversize-entries.mjs)（4 场景复刻修复）。
+- 开发期证据脚本（图标 / 快捷方式、托盘、超大会话复刻，共 3 组）不随公仓发布。
 
 ## v1.0.0 · 2026-11-18
 
@@ -51,5 +69,4 @@
 ### 测试
 
 - `cd bridge && npm test` → **216/216**（`node --test`，纯夹具，不碰真实 `~/.pi/agent`）。
-- `node scripts/test-gate.mjs --full` → 20 套件全绿（unit 216 + 19 个 E2E：firstLoad / composer / origin / del / treeFlat / treeView / models / b8 / mobile / multi / mcp / layout / sessionView / sseTail / bgContinue / bgUi / sessionHeader / sessionMemory / thinkingOrder）；任一 FAIL 不发版。
-- 证据脚本见 [`scripts/evidence/`](scripts/evidence)：全部 78xx/79xx 端口 + 夹具会话目录，真实桥（7788）与 `~/.pi/agent` 全程不碰。
+- 公仓只发布单测；发版用的端到端套件与证据脚本属于开发期工具，不随公仓发布。
