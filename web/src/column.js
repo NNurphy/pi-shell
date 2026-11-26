@@ -11,6 +11,7 @@
 
 import { renderEntry, fmtDuration, seedToolMeta, noteToolMeta } from "./render.js";
 import { createTranscript } from "./stream.js";
+import { renderMarkdown } from "./markdown.js";
 
 const LAZY_CHUNK = 100; // 长会话先渲染末 100 条，向上滚动追加
 const NEAR_BOTTOM = 60;
@@ -52,8 +53,16 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
     send: q("[data-role=send]"),
     abort: q("[data-role=abort]"),
     behavior: q("[data-role=behavior]"),
+    planMode: q("[data-role=plan-mode]"),
+    planModeClose: q("[data-role=plan-mode-close]"),
     imageInput: q("[data-role=image-input]"),
     fileInput: q("[data-role=file-input]"),
+    // v1.3.0 行内斜杠命令面板（每列一份，见文件后半「斜杠命令」段）
+    cmdPanel: q("[data-role=cmd-panel]"),
+    cmdQuery: q("[data-role=cmd-query]"),
+    cmdCount: q("[data-role=cmd-count]"),
+    cmdClose: q("[data-role=cmd-close]"),
+    cmdList: q("[data-role=cmd-list]"),
     attachBar: q("[data-role=attach-bar]"),
     notice: q("[data-role=notice]"),
     attachBanner: q("[data-role=attach-banner]"),
@@ -125,7 +134,17 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
     backfilling: false,
     // ---- 扩展 UI（该引擎的 widget/status 只影响这一列） ----
     widgetLines: [],
+    // ---- 计划协议（卡片从消息标记 + 计划文件派生，不新增会话存储） ----
+    planCards: new Map(), // planPath → card 控制器（同一路径全列只留一个 DOM 卡片节点）
+    planSkeleton: null, // 流式期间「正在生成计划…」骨架
+    planTicker: null,
+    planMode: { active: false, dismissed: false }, // 计划模式条（dismissed 只存内存）
+    approvedPlans: new Set(), // 已批准的计划路径（从会话里的批准消息派生，刷新后可恢复 C3）
   };
+
+  // composer 的常规 placeholder（计划模式条出现时临时换成计划用文案）
+  const INPUT_PLACEHOLDER = el.input?.getAttribute("placeholder") || "";
+  const PLAN_PLACEHOLDER = "描述要计划的事，例如「做个导出功能」";
 
   // ============================ 提示 / 接管状态 ============================
 
@@ -163,9 +182,11 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
     el.behavior.hidden = c.state !== "streaming";
     // 单列 Composer 只显示一个主按钮（idle=发送 / streaming=中止），靠 form 上的 data-streaming
     el.form.dataset.streaming = c.state === "streaming" ? "true" : "false";
-    el.input.placeholder = canSend
-      ? "输入消息（Enter 换行 · Ctrl+Enter 发送 · Ctrl+K 命令面板 · Ctrl+U 注入文件）"
-      : "只读浏览中：等待接管完成或重试…";
+    el.input.placeholder = !canSend
+      ? "只读浏览中：等待接管完成或重试…"
+      : planModeVisible()
+        ? PLAN_PLACEHOLDER
+        : INPUT_PLACEHOLDER;
   }
 
   // ============================ HTTP（带本列 clientId） ============================
@@ -306,9 +327,9 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
       c.lazy.more = more;
     }
     for (const entry of all.slice(c.lazy.renderedFrom)) {
-      const node = renderEntry(entry, data.sessionId);
-      if (node) body.appendChild(node);
+      appendEntryNode(body, entry, data.sessionId);
     }
+    syncPlanModeFromEntries(all);
     body.dataset.entries = String(all.length - c.lazy.renderedFrom);
     body.dataset.total = String(all.length);
     body.dataset.leafId = data.leafId ?? "";
@@ -333,14 +354,11 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
     const from = Math.max(0, lazy.renderedFrom - LAZY_CHUNK);
     const before = el.log.scrollTop;
     const beforeHeight = el.log.scrollHeight;
-    const nodes = [];
+    const anchor = lazy.more ? lazy.more.nextSibling : lazy.body.firstChild;
     for (const entry of lazy.entries.slice(from, lazy.renderedFrom)) {
       noteToolMeta(lazy.sessionId, entry);
-      const node = renderEntry(entry, lazy.sessionId);
-      if (node) nodes.push(node);
+      appendEntryNode(lazy.body, entry, lazy.sessionId, anchor);
     }
-    const anchor = lazy.more ? lazy.more.nextSibling : lazy.body.firstChild;
-    for (const node of nodes) lazy.body.insertBefore(node, anchor);
     lazy.renderedFrom = from;
     if (lazy.more) {
       if (from === 0) {
@@ -641,7 +659,14 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
         }
         if (item.durationMs == null && item.startedAt != null) hasRunningTool = true;
       } else {
-        body.textContent = item.text || "";
+        // 计划协议：assistant 正文里的 PLAN_READY 行不渲染，卡片挂在正文之后
+        if (item.kind === "assistant") {
+          const split = splitPlanMarker(item.text);
+          item.planPath = split.path;
+          body.textContent = split.body;
+        } else {
+          body.textContent = item.text || "";
+        }
       }
       // 兜底不变量（回合没重载成功也成立）：同一轮里思考行永远排在正文行之前。
       // 直播态思考**保持展开**（用户坐在电脑前要看思考过程），折叠只在回合落定后由 entries 承担。
@@ -656,6 +681,7 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
       }
     }
     if (hasRunningTool) startDurationTicker();
+    syncLivePlan();
     applyToolNesting();
     autoScrollIfPinned(forceScroll);
   }
@@ -669,7 +695,8 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
     const item = kind ? [...c.transcript.items].reverse().find((it) => it.kind === kind) : null;
     const node = item ? c.liveView.get(item.key) : null;
     const entry = { type: "message", id: `live-${++c.liveSeq}`, timestamp: new Date().toISOString(), message };
-    const rich = renderEntry(entry, c.sessionId || "live");
+    const aware = planAwareEntry(entry);
+    const rich = renderEntry(aware.entry, c.sessionId || "live");
     if (!rich) return false;
     // 富渲染已经把同一条消息里的 thinking 块出来了 → 撤掉直播态那条重复的思考行（不重复、不留残影）
     const richHasThinking = Array.isArray(message?.content) && message.content.some((b) => b?.type === "thinking");
@@ -721,8 +748,707 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
     } else {
       container.appendChild(rich);
     }
+    // 计划卡片：正文在富渲染里，卡片挂在它之后（同一轮最下方）
+    if (aware.planPath && rich.isConnected) mountPlanCard(rich, aware.planPath);
     autoScrollIfPinned();
     return true;
+  }
+
+  // ============================ v1.3.0 计划协议（PLAN_READY 卡片 + 计划模式条） ============================
+  //
+  // 三条硬约束：
+  //   ① 卡片是「轮内附件块」，不是新消息：同一路径在本列只保留一个 DOM 卡片节点，更新只改内容；
+  //   ② 卡片状态完全由「消息文本里的标记 + GET /api/plan 的响应」派生，不引入会话存储 / 新 SSE 事件；
+  //   ③ 不抢滚动（跟随仍由 autoScrollIfPinned 决定），不打断 SSE 追加。
+
+  const PLAN_MAX_VERSIONS = 5; // 内存里保留最近 5 版（旧版可切回，不回写文件）
+  const PLAN_LONG_LINES = 12; // C5：>12 行 或 >600 字 → 默认折叠
+  const PLAN_LONG_CHARS = 600;
+  const PLAN_POLL_MS = 2000; // 原地更新：mtimeMs 变化 → 同一张卡片版本 +1
+  const PLAN_MARKER_RE = /^\s*PLAN_READY:\s*(\S.*)$/;
+  const PLAN_MODE_RE = /^\s*\/plan(?:\s|$)/;
+  // 刷新后会话里存的是桥改写过的提示词（原文不落盘）——它等价于「这条是 /plan 发的」，仅用于重算模式条
+  const PLAN_MODE_REWRITTEN = /^\s*\[pi-shell 计划阶段\]/;
+  const planMsgApprove = (p) => `计划已批准：${p}。请按计划实施。`;
+  const planMsgRevise = (p, text) =>
+    `对计划 ${p} 的修改意见：${text}。请更新同一文件，并在回复末尾再次输出 PLAN_READY 标记。`;
+
+  function mk(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  const fmtClock = (ms) => {
+    const d = new Date(Number(ms) || Date.now());
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+
+  /** assistant 正文 → { body, path }：取**最后一条**标记行，该行不渲染 */
+  function splitPlanMarker(text) {
+    const src = String(text ?? "");
+    if (!src.includes("PLAN_READY")) return { body: src, path: null };
+    const lines = src.split("\n");
+    let hit = -1;
+    for (let i = 0; i < lines.length; i += 1) if (PLAN_MARKER_RE.test(lines[i])) hit = i;
+    if (hit < 0) return { body: src, path: null };
+    const path = PLAN_MARKER_RE.exec(lines[hit])[1].trim();
+    lines.splice(hit, 1);
+    return { body: lines.join("\n").replace(/\s+$/, ""), path: path || null };
+  }
+
+  /** 历史 / 富渲染用的 entry 克隆：把标记行从 assistant 文本块里去掉（免得 renderEntry 把它当正文画出来） */
+  function planAwareEntry(entry) {
+    const msg = entry?.message;
+    if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) return { entry, planPath: null };
+    let planPath = null;
+    let changed = false;
+    const content = msg.content.map((block) => {
+      if (block?.type !== "text" || typeof block.text !== "string") return block;
+      const split = splitPlanMarker(block.text);
+      if (!split.path) return block;
+      planPath = split.path;
+      changed = true;
+      return { ...block, text: split.body };
+    });
+    if (!changed) return { entry, planPath: null };
+    return { entry: { ...entry, message: { ...msg, content } }, planPath };
+  }
+
+  /** 渲染一条 entry 并挂上计划卡片（历史 / 懒加载共用；insertBefore 为 null 时 append） */
+  function appendEntryNode(parent, entry, sessionId, insertBefore = null) {
+    const aware = planAwareEntry(entry);
+    const node = renderEntry(aware.entry, sessionId);
+    if (!node) return null;
+    if (insertBefore) parent.insertBefore(node, insertBefore);
+    else parent.appendChild(node);
+    if (aware.planPath) mountPlanCard(node, aware.planPath);
+    return node;
+  }
+
+  function messageText(msg) {
+    if (!msg) return "";
+    const content = msg.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((b) => (b?.type === "text" && typeof b.text === "string" ? b.text : "")).join("\n");
+  }
+
+  // ---------- 计划模式条（B4） ----------
+
+  function planModeVisible() {
+    return Boolean(c.planMode?.active && !c.planMode?.dismissed);
+  }
+
+  function paintPlanMode() {
+    if (el.planMode) el.planMode.hidden = !planModeVisible();
+    applyComposerState(); // placeholder 跟着模式条走（applyComposerState 内部判 planModeVisible）
+  }
+
+  /** 发送一条消息后：以 /plan 开头 → 进计划模式；否则退出 */
+  function notePlanModeFromText(text) {
+    const raw = String(text ?? "");
+    if (PLAN_MODE_RE.test(raw)) {
+      c.planMode.active = true;
+      c.planMode.dismissed = false;
+    } else {
+      c.planMode.active = false;
+    }
+    paintPlanMode();
+  }
+
+  /** 刷新页面 / 打开会话后按同一规则重算：会话最后一条用户消息是否 /plan 命脉 */
+  function syncPlanModeFromEntries(entries) {
+    let last = null;
+    for (const entry of entries ?? []) {
+      if (entry?.type !== "message" || entry.message?.role !== "user") continue;
+      last = messageText(entry.message);
+      // C3「已批准」也从会话派生：批准就是一条真实用户消息（刷新/重放后仍能恢复）
+      const approved = /计划已批准：(.+?)。请按计划实施。/.exec(last || "");
+      if (approved) c.approvedPlans.add(approved[1].trim());
+    }
+    c.planMode.active = typeof last === "string" && (PLAN_MODE_RE.test(last) || PLAN_MODE_REWRITTEN.test(last));
+    c.planMode.dismissed = false;
+    paintPlanMode();
+  }
+
+  if (el.planModeClose) {
+    el.planModeClose.addEventListener("click", () => {
+      c.planMode.dismissed = true; // 仅内存：不写会话、不撒消息
+      paintPlanMode();
+    });
+  }
+  paintPlanMode();
+
+  // ---------- 计划卡片 ----------
+
+  let planUid = 0;
+
+  function createPlanCard(path) {
+    const root = mk("article", "plan-card");
+    root.dataset.role = "plan-card";
+    root.dataset.state = "generating";
+    root.dataset.planPath = path;
+    root.setAttribute("role", "region");
+    root.setAttribute("aria-label", "计划");
+
+    const bar = mk("span", "plan-bar");
+    bar.setAttribute("aria-hidden", "true");
+
+    const head = mk("header", "plan-head");
+    const titles = mk("div", "plan-titles");
+    const titleEl = mk("h3", "plan-title", "正在生成计划…");
+    const meta = mk("p", "plan-meta");
+    const srcEl = mk("span", "plan-src", path);
+    srcEl.title = path;
+    const timeEl = mk("span", "plan-time", "—");
+    const verEl = mk("span", "plan-ver", "v—");
+    const vers = mk("span", "plan-vers");
+    meta.append(srcEl, mk("span", "plan-dot", "·"), timeEl, mk("span", "plan-dot", "·"), verEl, vers);
+    titles.append(titleEl, meta);
+    head.append(titles);
+
+    const notice = mk("div", "plan-notice");
+    notice.dataset.role = "plan-notice";
+    notice.hidden = true;
+    const noticeText = mk("div", "notice-text");
+    const noticePath = mk("div", "path");
+    const noticeBtns = mk("div", "notice-btns");
+    const retryBtn = mk("button", "btn-quiet", "重新读取");
+    retryBtn.type = "button";
+    retryBtn.dataset.role = "plan-retry";
+    const copyPathBtn = mk("button", "btn-quiet", "复制路径");
+    copyPathBtn.type = "button";
+    copyPathBtn.dataset.role = "plan-copy-path";
+    const latestBtn = mk("button", "btn-quiet", "回到最新");
+    latestBtn.type = "button";
+    latestBtn.dataset.role = "plan-latest";
+    noticeBtns.append(retryBtn, copyPathBtn, latestBtn);
+    notice.append(noticeText, noticePath, noticeBtns);
+
+    const toc = mk("div", "plan-toc");
+    toc.dataset.role = "plan-toc";
+    toc.hidden = true;
+
+    const bodyEl = mk("div", "plan-body");
+    bodyEl.dataset.role = "plan-body";
+    bodyEl.tabIndex = 0;
+
+    const skel = mk("div", "plan-skel");
+    skel.dataset.role = "plan-skeleton";
+    const skelText = mk("div", "plan-skel-text", "正在生成计划…");
+    const bars = mk("div", "plan-skel-bars");
+    bars.append(mk("i"), mk("i"), mk("i"));
+    skel.append(skelText, bars);
+
+    const more = mk("div", "plan-more");
+    const moreBtn = mk("button");
+    moreBtn.type = "button";
+    moreBtn.dataset.role = "plan-expand";
+    more.append(moreBtn);
+
+    const actions = mk("footer", "plan-actions");
+    const approve = mk("button", "btn-primary", "开始实施");
+    approve.type = "button";
+    approve.dataset.role = "plan-approve";
+    const revise = mk("button", "btn-ghost", "要求修改");
+    revise.type = "button";
+    revise.dataset.role = "plan-revise";
+    const quiet = mk("span", "plan-quiet");
+    const copyBtn = mk("button", "btn-quiet", "复制");
+    copyBtn.type = "button";
+    copyBtn.dataset.role = "plan-copy";
+    const sourceBtn = mk("button", "btn-quiet", "查看源文件");
+    sourceBtn.type = "button";
+    sourceBtn.dataset.role = "plan-source";
+    quiet.append(copyBtn, sourceBtn);
+    actions.append(approve, revise, mk("span", "grow"), quiet);
+
+    const reviseBox = mk("div", "plan-revise");
+    reviseBox.dataset.role = "plan-revise-box";
+    reviseBox.hidden = true;
+    const ta = mk("textarea");
+    ta.rows = 3;
+    ta.dataset.role = "plan-revise-input";
+    ta.placeholder = "说明要改哪里，agent 会改同一份计划";
+    const hint = mk("p", "hint", "说明要改哪里，agent 会改同一份计划");
+    const reviseBtns = mk("div", "btns");
+    const submitBtn = mk("button", "btn-primary", "提交修改");
+    submitBtn.type = "button";
+    submitBtn.dataset.role = "plan-revise-submit";
+    submitBtn.disabled = true;
+    const cancelBtn = mk("button", "btn-ghost", "取消");
+    cancelBtn.type = "button";
+    cancelBtn.dataset.role = "plan-revise-cancel";
+    reviseBtns.append(submitBtn, cancelBtn);
+    reviseBox.append(ta, hint, reviseBtns);
+
+    // C1：生成中只给一个 quiet「中止」（走 composer 的中止，不批准不存在的计划）
+    const genActions = mk("footer", "plan-actions");
+    genActions.dataset.role = "plan-gen-actions";
+    genActions.hidden = true;
+    const abortBtn = mk("button", "btn-quiet", "中止");
+    abortBtn.type = "button";
+    abortBtn.dataset.role = "plan-abort";
+    abortBtn.addEventListener("click", () => void c.abort?.());
+    genActions.append(mk("span", "grow"), abortBtn);
+
+    const err = mk("div", "plan-error");
+    err.dataset.role = "plan-error";
+    err.hidden = true;
+
+    root.append(bar, head, notice, toc, skel, bodyEl, more, reviseBox, err, genActions, actions);
+
+    const card = {
+      uid: ++planUid,
+      path,
+      absPath: path,
+      relPath: null,
+      el: root,
+      titleEl,
+      srcEl,
+      timeEl,
+      verEl,
+      vers,
+      notice,
+      noticeText,
+      noticePath,
+      retryBtn,
+      copyPathBtn,
+      latestBtn,
+      toc,
+      bodyEl,
+      skel,
+      skelText,
+      genActions,
+      more,
+      moreBtn,
+      actions,
+      approve,
+      revise,
+      copyBtn,
+      sourceBtn,
+      reviseBox,
+      ta,
+      submitBtn,
+      cancelBtn,
+      err,
+      versions: [],
+      state: "generating",
+      collapsed: true,
+      viewIndex: -1, // -1 = 最新版
+      tocCount: 0,
+      inflight: false,
+      mode: "view", // view | revise
+    };
+
+    // ---- 动作绑定 ----
+    approve.addEventListener("click", () => void approvePlan(card));
+    revise.addEventListener("click", () => openRevise(card));
+    submitBtn.addEventListener("click", () => void submitRevise(card));
+    cancelBtn.addEventListener("click", () => closeRevise(card));
+    ta.addEventListener("input", () => {
+      submitBtn.disabled = !ta.value.trim();
+    });
+    ta.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeRevise(card);
+      }
+    });
+    copyBtn.addEventListener("click", async () => {
+      const v = currentVersion(card);
+      const ok = v ? await copyText(v.content) : false;
+      shell.toast(ok ? "计划已复制" : "复制失败：请手动选择正文", ok ? "info" : "error");
+    });
+    sourceBtn.addEventListener("click", () => openPlanSource(card));
+    retryBtn.addEventListener("click", () => void refreshPlanCard(card, { force: true }));
+    copyPathBtn.addEventListener("click", async () => {
+      const ok = await copyText(card.absPath || card.path);
+      shell.toast(ok ? "路径已复制" : "复制失败", ok ? "info" : "error");
+    });
+    latestBtn.addEventListener("click", () => {
+      card.viewIndex = -1;
+      paintCard(card);
+    });
+    moreBtn.addEventListener("click", () => {
+      card.collapsed = !card.collapsed;
+      paintCard(card);
+    });
+
+    return card;
+  }
+
+  const currentVersion = (card) =>
+    card.versions.length ? card.versions[card.viewIndex >= 0 ? card.viewIndex : card.versions.length - 1] : null;
+  const isLongPlan = (card) => {
+    const v = currentVersion(card);
+    if (!v) return false;
+    return v.lines > PLAN_LONG_LINES || String(v.content).trim().length > PLAN_LONG_CHARS;
+  };
+
+  function cardFor(path) {
+    let card = c.planCards.get(path);
+    if (card) return card;
+    card = createPlanCard(path);
+    c.planCards.set(path, card);
+    return card;
+  }
+
+  /** 卡片渲染：正文 + 目录 + 折叠条（只在版本变化 / 切版本时跑，不每帧跑） */
+  function renderPlanBody(card) {
+    const v = currentVersion(card);
+    const body = card.bodyEl;
+    const keep = body.scrollTop;
+    body.replaceChildren();
+    card.toc.replaceChildren(mk("span", "lab", "目录"));
+    card.tocCount = 0;
+    if (!v) return;
+    const frag = renderMarkdown(v.content);
+    const heads = [...frag.querySelectorAll("h1, h2, h3")];
+    heads.forEach((h, i) => {
+      h.id = `plan-${card.uid}-h${i}`;
+    });
+    body.appendChild(frag);
+    card.tocCount = heads.length;
+    for (const h of heads.slice(0, 5)) {
+      const a = mk("a", null, h.textContent || "");
+      a.href = `#${h.id}`;
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        // 目录跳转只改卡片自己的滚动位置，不动会话流
+        body.scrollTop = Math.max(0, h.offsetTop - body.offsetTop - 4);
+      });
+      card.toc.appendChild(a);
+    }
+    body.scrollTop = keep;
+  }
+
+  function pushPlanVersion(card, data) {
+    const prev = card.versions[card.versions.length - 1];
+    const n = (prev?.n || 0) + 1;
+    const content = String(data.content ?? "");
+    card.versions.push({
+      n,
+      content,
+      mtimeMs: data.mtimeMs,
+      bytes: data.bytes,
+      title: data.title,
+      at: Number(data.mtimeMs) || Date.now(),
+      lines: content.split("\n").length,
+    });
+    while (card.versions.length > PLAN_MAX_VERSIONS) card.versions.shift();
+    card.viewIndex = -1;
+    card.collapsed = true;
+    if (data.title) card.titleEl.textContent = data.title;
+    card.el.setAttribute("aria-label", `计划：${data.title || card.path}`);
+    card.timeEl.textContent = fmtClock(data.mtimeMs);
+    card.el.dataset.lines = String(content.split("\n").length);
+    card.el.dataset.version = `v${n}`;
+    renderPlanBody(card);
+    card.el.classList.toggle("is-long", isLongPlan(card));
+  }
+
+  function paintCard(card) {
+    const st = card.state;
+    const v = currentVersion(card);
+    const viewingOld = card.viewIndex >= 0 && card.viewIndex !== card.versions.length - 1;
+    const skeleton = st === "generating" || st === "revising";
+    const hasPlan = Boolean(v);
+
+    card.el.dataset.state = st;
+    card.skel.hidden = !skeleton;
+    card.skelText.textContent = st === "revising" ? "正在按意见修改…" : hasPlan ? "正在读取计划…" : "正在生成计划…";
+    card.bodyEl.hidden = skeleton;
+    card.reviseBox.hidden = skeleton || card.mode !== "revise";
+    card.bodyEl.hidden = skeleton || card.mode === "revise";
+    card.err.hidden = true;
+
+    // 折叠条 / 目录（C5）
+    const long = isLongPlan(card);
+    card.el.classList.toggle("is-long", long);
+    const collapsed = long && card.collapsed;
+    card.bodyEl.classList.toggle("expanded", long && !card.collapsed);
+    card.more.hidden = skeleton || !long;
+    if (long && v) {
+      card.moreBtn.textContent = card.collapsed ? `展开全部 · 共 ${v.lines} 行 ▾` : "收起 ▴";
+      card.moreBtn.dataset.expanded = card.collapsed ? "0" : "1";
+    }
+    card.toc.hidden = skeleton || !long || collapsed || card.tocCount === 0;
+
+    // 元信息 / 版本
+    card.verEl.textContent = v ? `v${v.n}` : "v—";
+    card.vers.replaceChildren();
+    for (const ver of card.versions) {
+      if (v && ver.n === v.n) continue;
+      const b = mk("button", "plan-ver-btn", `v${ver.n}`);
+      b.type = "button";
+      b.dataset.role = "plan-ver-btn";
+      b.title = `切到 v${ver.n}（本地内存，不回写文件）`;
+      b.addEventListener("click", () => {
+        card.viewIndex = card.versions.indexOf(ver);
+        paintCard(card);
+      });
+      card.vers.appendChild(b);
+    }
+    card.srcEl.textContent = card.relPath || card.path;
+    card.srcEl.title = card.absPath || card.path;
+
+    // 动作条（流式生成中不渲染动作，避免批准不存在的计划）；生成中只留 quiet「中止」（C1）
+    card.actions.hidden = skeleton;
+    card.genActions.hidden = !skeleton;
+    card.approve.disabled = st !== "pending" || viewingOld;
+    card.approve.textContent = st === "approved" ? "已批准" : "开始实施";
+    card.approve.classList.toggle("btn-primary", st !== "approved");
+    card.approve.classList.toggle("btn-ghost", st === "approved");
+    card.revise.disabled = !(st === "pending" || st === "approved") || viewingOld;
+    card.copyBtn.disabled = !hasPlan;
+    card.sourceBtn.disabled = !(card.absPath || card.path);
+
+    // 提示条：缺失 / 读取失败 / 查看历史版本
+    const showNotice = st === "missing" || st === "error" || viewingOld;
+    card.notice.hidden = !showNotice;
+    card.notice.dataset.kind = st === "missing" ? "missing" : st === "error" ? "error" : "history";
+    card.noticePath.hidden = !(st === "missing" || st === "error");
+    card.noticePath.textContent = card.absPath || card.path;
+    card.retryBtn.hidden = !(st === "missing" || st === "error");
+    card.copyPathBtn.hidden = !(st === "missing" || st === "error");
+    card.latestBtn.hidden = !viewingOld;
+    if (st === "missing") {
+      card.noticeText.textContent = hasPlan
+        ? "计划文件不在了（可能被移动或删除）；显示的是缓存内容"
+        : "计划文件不在了（可能被移动或删除）";
+    } else if (st === "error") {
+      card.noticeText.textContent = `读取失败：${card.errorText || "未知原因"}`;
+    } else if (viewingOld) {
+      card.noticeText.textContent = `正在查看 v${v?.n}（历史版本）`;
+    }
+  }
+
+  function setCardState(card, state) {
+    if (card.state !== state) {
+      card.state = state;
+      if (state !== "revising") card.mode = "view";
+    }
+    paintCard(card);
+  }
+
+  /** 读计划文件：首次加载 / 轮询 / 手动重试共用（mtimeMs 变化 → 同一张卡片版本 +1） */
+  async function refreshPlanCard(card, { force = false } = {}) {
+    if (card.inflight) return;
+    card.inflight = true;
+    try {
+      const res = await apiFetch(clientId, `/api/plan?path=${encodeURIComponent(card.path)}`, { cache: "no-store" });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {}
+      if (!res.ok) {
+        const code = data?.error?.code || `HTTP_${res.status}`;
+        const msg = data?.error?.message || "";
+        card.errorText = msg ? `${code}：${msg}` : code;
+        setCardState(card, "error");
+        return;
+      }
+      card.errorText = "";
+      if (!data?.exists) {
+        setCardState(card, "missing");
+        return;
+      }
+      card.absPath = data.path || card.absPath;
+      card.relPath = data.relPath || card.relPath;
+      const last = card.versions[card.versions.length - 1];
+      const changed = !last || last.mtimeMs !== data.mtimeMs || last.bytes !== data.bytes;
+      if (changed || force) pushPlanVersion(card, data);
+      // 首次载入 / 「修改中」收到新版本 → 回到待批；已批准的保持已批准（不撤销用户决定）
+      if (card.state === "generating" || card.state === "revising") {
+        setCardState(card, c.approvedPlans.has(card.path) || c.approvedPlans.has(card.relPath) ? "approved" : "pending");
+      } else paintCard(card);
+    } catch (err) {
+      card.errorText = String(err?.message || err);
+      setCardState(card, "error");
+    } finally {
+      card.inflight = false;
+    }
+  }
+
+  /** 轮询：只检查仍挂在页面上、且还有事务未完成/可更新的卡片（不刷屏、不新增节点） */
+  function ensurePlanTicker() {
+    if (c.planTicker) return;
+    c.planTicker = setInterval(() => {
+      if (document.hidden) return;
+      for (const card of c.planCards.values()) {
+        if (!card.el.isConnected || card.state === "generating") continue;
+        void refreshPlanCard(card);
+      }
+    }, PLAN_POLL_MS);
+    c.planTicker.unref?.();
+  }
+
+  function stopPlanTicker() {
+    if (!c.planTicker) return;
+    clearInterval(c.planTicker);
+    c.planTicker = null;
+  }
+
+  /** 把卡片放到 anchor（一轮正文节点）之后：同一路径全列只留一个卡片节点 */
+  function mountPlanCard(anchor, path) {
+    if (!anchor || !path) return null;
+    const card = cardFor(path);
+    if (card.el.previousElementSibling !== anchor) anchor.after(card.el);
+    void refreshPlanCard(card);
+    ensurePlanTicker();
+    return card;
+  }
+
+  // ---------- 流式骨架（该轮 streaming 且尚无标记） ----------
+
+  function ensurePlanSkeleton() {
+    const container = c.liveNodes;
+    if (!container) return;
+    if (c.planSkeleton?.isConnected && c.planSkeleton.parentNode === container) return;
+    if (!c.planSkeleton) {
+      const sk = mk("article", "plan-card is-skeleton");
+      sk.dataset.role = "plan-skeleton";
+      sk.dataset.state = "generating";
+      const bar = mk("span", "plan-bar");
+      bar.setAttribute("aria-hidden", "true");
+      const head = mk("header", "plan-head");
+      const titles = mk("div", "plan-titles");
+      titles.append(mk("h3", "plan-title", "正在生成计划…"));
+      head.append(titles);
+      const skel = mk("div", "plan-skel");
+      const bars = mk("div", "plan-skel-bars");
+      bars.append(mk("i"), mk("i"), mk("i"));
+      skel.append(bars);
+      // C1：骨架态的唯一动作是 quiet「中止」（走 composer 中止）
+      const genFoot = mk("footer", "plan-actions");
+      const abortBtn = mk("button", "btn-quiet", "中止");
+      abortBtn.type = "button";
+      abortBtn.dataset.role = "plan-abort";
+      abortBtn.addEventListener("click", () => void c.abort?.());
+      genFoot.append(mk("span", "grow"), abortBtn);
+      sk.append(bar, head, skel, genFoot);
+      c.planSkeleton = sk;
+    }
+    container.appendChild(c.planSkeleton);
+  }
+
+  function clearPlanSkeleton() {
+    c.planSkeleton?.remove();
+  }
+
+  /** 流式渲染后：有标记 → 挂卡片；没有但本回合是 /plan → 骨架；否则清掉 */
+  function syncLivePlan() {
+    const container = c.liveNodes;
+    if (!container || !container.isConnected) return;
+    let lastPlan = null;
+    for (const it of c.transcript.items) if (it.kind === "assistant" && it.planPath) lastPlan = it;
+    if (lastPlan) {
+      const node = c.liveView.get(lastPlan.key);
+      if (node?.isConnected) mountPlanCard(node, lastPlan.planPath);
+      clearPlanSkeleton();
+      return;
+    }
+    if (c.state === "streaming" && planModeVisible()) ensurePlanSkeleton();
+    else clearPlanSkeleton();
+  }
+
+  // ---------- 动作：批准 / 要求修改 / 查看源文件 ----------
+
+  function showCardError(card, text) {
+    card.err.hidden = !text;
+    card.err.textContent = text || "";
+  }
+
+  async function approvePlan(card) {
+    if (card.state !== "pending") return;
+    const path = card.relPath || card.path;
+    showCardError(card, "");
+    const before = card.state;
+    setCardState(card, "approved"); // 乐观置位；发送失败回滚（C3 边界）
+    c.approvedPlans.add(path);
+    if (card.absPath) c.approvedPlans.add(card.absPath);
+    const ok = await sendMessage(planMsgApprove(path));
+    if (!ok) {
+      c.approvedPlans.delete(path);
+      if (card.absPath) c.approvedPlans.delete(card.absPath);
+      setCardState(card, before);
+      showCardError(card, "回传失败：批准没有发出去，点「开始实施」重试");
+    }
+  }
+
+  function openRevise(card) {
+    if (!(card.state === "pending" || card.state === "approved")) return;
+    card.mode = "revise";
+    card.ta.value = "";
+    card.submitBtn.disabled = true;
+    showCardError(card, "");
+    paintCard(card);
+    card.ta.focus();
+  }
+
+  function closeRevise(card) {
+    card.mode = "view";
+    card.ta.value = "";
+    paintCard(card);
+    card.revise.focus?.();
+  }
+
+  async function submitRevise(card) {
+    const text = card.ta.value.trim();
+    if (!text) return;
+    if (text.length > 2000) {
+      showCardError(card, "意见过长（>2000 字），请分次提");
+      return;
+    }
+    const path = card.relPath || card.path;
+    showCardError(card, "");
+    card.mode = "view";
+    setCardState(card, "revising");
+    const ok = await sendMessage(planMsgRevise(path, text));
+    if (!ok) {
+      setCardState(card, "pending");
+      showCardError(card, "回传失败：修改意见没发出去，请重试");
+      return;
+    }
+    card.ta.value = "";
+  }
+
+  async function openPlanSource(card) {
+    const rel = card.relPath;
+    if (rel && typeof shell.openPlanSource === "function") {
+      const ok = await shell.openPlanSource(rel, card.absPath || rel);
+      if (ok !== false) return;
+    }
+    // 降级：面板不可用 / 文件在 cwd 之外 → 复制路径 + toast
+    const ok = await copyText(card.absPath || card.path);
+    shell.toast(ok ? "路径已复制（未打开文件面板）" : "复制失败：请手动复制路径", ok ? "info" : "error");
+  }
+
+  async function copyText(text) {
+    const value = String(text ?? "");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {}
+    try {
+      const box = document.createElement("textarea");
+      box.value = value;
+      box.setAttribute("readonly", "");
+      box.style.position = "fixed";
+      box.style.opacity = "0";
+      document.body.appendChild(box);
+      box.select();
+      const ok = document.execCommand("copy");
+      box.remove();
+      return ok;
+    } catch {
+      return false;
+    }
   }
 
   // ============================ 模型 / 思考级别（本列真相） ============================
@@ -1211,6 +1937,9 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
         shell.refreshChanges();
         c.deltaCount = 0;
         c.firstDeltaAt = null;
+        clearPlanSkeleton(); // 回合结束：没有标记就不留骨架
+        // 回合结束后计划文件可能刚好被覆盖 → 已挂载的卡片各查一次（mtime 变化才更新）
+        for (const card of c.planCards.values()) if (card.el.isConnected) void refreshPlanCard(card);
         // 一轮结束后会话才落盘/有标题：刷新列表并把真实标题带回列头（拿不到就保持原样）
         void shell.list.load().then(() => c.refreshTitle());
         // 回合结束一律回到权威顺序（落盘顺序 = thinking → text）：把本轮 live 合成节点
@@ -1431,18 +2160,15 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
   }
   c.ensureSessionIdentity = ensureSessionIdentity;
 
-  c.submitPrompt = async (streamingBehavior) => {
-    const text = el.input.value.trim();
-    const images = c.attachments.filter((a) => a.kind === "image").map((a) => ({ type: "image", data: a.data, mimeType: a.mimeType }));
-    if (!text && images.length === 0) return;
+  /**
+   * v1.3.0：真实发一条消息（用户输入 / 计划卡片的批准与修改意见共用同一条通路）。
+   * 返回 true = 已到达桥；false = 没发出去（调用方决定是否回滚 UI）。
+   */
+  async function sendMessage(message, { images = [], streamingBehavior, identityChecked = false } = {}) {
     // 先验身份再清输入框：失败时用户还能接着改/重试，不用重打
-    if (!(await ensureSessionIdentity())) return;
-    const message = composeMessage(text);
-    el.input.value = "";
-    c.attachments.length = 0;
-    paintAttachments();
+    if (!identityChecked && !(await ensureSessionIdentity())) return false;
     c.transcript.addUser(message);
-    paintLive(c.transcript.items, null, true); // 用户自己发消息 → 强制滚到底部
+    paintLive(c.transcript.items, null, true); // 自己发消息 → 强制滚到底部
     c.showNotice("");
     try {
       const body = { message };
@@ -1450,6 +2176,7 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
       if (streamingBehavior) body.streamingBehavior = streamingBehavior;
       const data = await c.postJson("/api/prompt", body);
       console.info(`[pi-shell] disposition = ${data?.disposition}`);
+      return true;
     } catch (err) {
       if (err.status === 504) {
         // 扩展命令（如弹对话框的 /select-demo）会让 pi 的 prompt 回执延后 → 504 属预期
@@ -1460,14 +2187,29 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
             : "命令回执超时（504）：pi 可能仍在处理，请不要重复发送；等待事件流更新。",
           true,
         );
-        return;
+        return true; // 回执超时不等于没发出（pi 可能仍在处理）
       }
       if (err.status === 503) {
         c.showNotice("pi 未就绪（503）：正在重启或已停止。", true);
-        return;
+        return false;
       }
       c.showNotice(err.message, true);
+      return false;
     }
+  }
+
+  c.submitPrompt = async (streamingBehavior) => {
+    const text = el.input.value.trim();
+    const images = c.attachments.filter((a) => a.kind === "image").map((a) => ({ type: "image", data: a.data, mimeType: a.mimeType }));
+    if (!text && images.length === 0) return;
+    // 先验身份再清输入框：失败时用户还能接着改/重试，不用重打
+    if (!(await ensureSessionIdentity())) return;
+    const message = composeMessage(text);
+    el.input.value = "";
+    c.attachments.length = 0;
+    paintAttachments();
+    notePlanModeFromText(message); // 计划模式条：/plan 开头进，其余退出
+    await sendMessage(message, { images, streamingBehavior, identityChecked: true });
   };
 
   c.abort = async () => {
@@ -1494,15 +2236,329 @@ export function createColumn({ key, clientId: initialClientId, root, shell }) {
     c.submitPrompt(el.behavior.hidden ? undefined : el.behavior.value);
   });
 
+  // ============================ 斜杠命令（v1.3.0）============================
+  //
+  // 入口：输入框打 `/`（且尚未出现空白）→ 下一帧开面板；Ctrl+K / ⋯「命令面板」等价入口。
+  // 选中语义：插入 `/name ` 到本列输入框（光标在名字后），**不发消息**，面板关闭，焦点留输入框。
+  // 焦点永远在 textarea：面板内没有 Tab 停靠点，高亮用 aria-activedescendant 表达（无障碍：焦点留在输入框，高亮用 aria-activedescendant）。
+
+  const CMD_SOURCES = ["extension", "prompt", "skill", "builtin"];
+  const CMD_SOURCE_LABEL = { extension: "扩展命令", prompt: "提示词模板", skill: "技能", builtin: "内置命令" };
+  const CMD_FLAG_ARGS = "可追加内容";
+  const CMD_FLAG_NONE = "无参";
+
+  const cmd = {
+    open: false,
+    commands: [],
+    visible: [], // [{ cmd, el, index }] —— 只看得到（已过滤）的项
+    active: 0,
+    seq: 0, // 每次打开/关闭 +1：让在飞的 /api/commands 结果作废
+    justPasted: false,
+  };
+
+  // 每列一份 DOM → id 必须带列键（列模板是克隆的）
+  if (el.cmdPanel) {
+    el.cmdPanel.id = `cmd-panel-${key}`;
+    el.input.setAttribute("aria-controls", el.cmdPanel.id);
+  }
+
+  /** `/xxx`（无空白）→ "xxx"；不在斜杠上下文 → null（句中 / 网址 / 已带空格都不算） */
+  function slashQuery(value) {
+    const m = /^\/(\S*)$/.exec(String(value ?? ""));
+    return m ? m[1] : null;
+  }
+
+  /** 行尾标注：桥给了 acceptsArgs 就用它；否则按来源保守标注（无显式标记时按来源保守标注） */
+  function commandFlag(item) {
+    if (typeof item.acceptsArgs === "boolean") return item.acceptsArgs ? CMD_FLAG_ARGS : CMD_FLAG_NONE;
+    const src = String(item.source || "");
+    if (src === "prompt" || src === "skill") return CMD_FLAG_ARGS;
+    if (src === "extension" || src === "builtin") return CMD_FLAG_NONE;
+    return "";
+  }
+
+  /** 按 source 固定分组（组内无命中则整组消失） */
+  function commandGroups(query) {
+    const q = query.trim().toLowerCase();
+    const hit = cmd.commands.filter((item) => {
+      const name = String(item.name ?? "");
+      if (!name) return false;
+      if (!q) return true;
+      return name.toLowerCase().includes(q) || String(item.description ?? "").toLowerCase().includes(q);
+    });
+    const groups = CMD_SOURCES.map((source) => ({ source, items: hit.filter((item) => String(item.source || "") === source) }));
+    const extra = new Map();
+    for (const item of hit) {
+      const source = String(item.source || "other");
+      if (CMD_SOURCES.includes(source)) continue;
+      if (!extra.has(source)) extra.set(source, []);
+      extra.get(source).push(item);
+    }
+    for (const [source, items] of extra) groups.push({ source, items });
+    return groups.filter((g) => g.items.length > 0);
+  }
+
+  function paintCommandPanel(query) {
+    el.cmdList.replaceChildren();
+    cmd.visible = [];
+    const groups = commandGroups(query);
+    const total = groups.reduce((n, g) => n + g.items.length, 0);
+
+    el.cmdQuery.replaceChildren();
+    const slash = document.createElement("span");
+    slash.className = "slash";
+    slash.textContent = "/";
+    el.cmdQuery.append(slash, document.createTextNode(query));
+    el.cmdCount.textContent = `${total} 项`;
+
+    if (!total) {
+      // A6：空态（不报错、不留白）；键盘 ↑↓ 无效但不抛错，Enter 不插入
+      const box = document.createElement("div");
+      box.className = "palette-empty";
+      const t = document.createElement("p");
+      t.className = "t";
+      t.textContent = "没有匹配的命令";
+      const h = document.createElement("p");
+      h.className = "h";
+      h.textContent = "试试 /plan、/skill 或直接输入文字";
+      box.append(t, h);
+      el.cmdList.append(box);
+      el.input.setAttribute("aria-activedescendant", "");
+      return;
+    }
+
+    let n = 0;
+    for (const group of groups) {
+      const head = document.createElement("div");
+      head.className = "palette-source";
+      head.id = `grp-${key}-${group.source}`;
+      head.setAttribute("role", "presentation");
+      head.textContent = CMD_SOURCE_LABEL[group.source] || group.source;
+      el.cmdList.append(head);
+
+      for (const item of group.items) {
+        const row = document.createElement("div");
+        row.className = "palette-item";
+        row.id = `opt-${key}-${String(item.name).replace(/[^\w-]/g, "_")}`;
+        row.setAttribute("role", "option");
+        row.setAttribute("aria-selected", "false");
+        row.dataset.command = item.name;
+
+        const name = document.createElement("span");
+        name.className = "palette-name";
+        name.textContent = `/${item.name}`;
+        const desc = document.createElement("span");
+        desc.className = "palette-desc";
+        desc.textContent = item.description || "";
+        row.append(name, desc);
+
+        const flag = commandFlag(item);
+        if (flag) {
+          const tag = document.createElement("span");
+          tag.className = "palette-flag";
+          tag.textContent = flag;
+          row.append(tag);
+        }
+
+        const index = n;
+        // 鼠标 hover 与键盘共用同一高亮（不做两套）
+        row.addEventListener("mouseenter", () => setCommandActive(index));
+        row.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          insertCommand(item);
+        });
+
+        el.cmdList.append(row);
+        cmd.visible.push({ cmd: item, el: row, index });
+        n += 1;
+      }
+    }
+
+    setCommandActive(Math.min(cmd.active, cmd.visible.length - 1), { scroll: false });
+    el.cmdList.scrollTop = 0;
+  }
+
+  function setCommandActive(index, opts = {}) {
+    if (!cmd.visible.length) return;
+    const next = Math.max(0, Math.min(index, cmd.visible.length - 1));
+    cmd.active = next;
+    for (const item of cmd.visible) item.el.setAttribute("aria-selected", item.index === next ? "true" : "false");
+    const current = cmd.visible[next];
+    el.input.setAttribute("aria-activedescendant", current.el.id);
+    if (opts.scroll === false) return;
+    // 手动滚动列表（scrollIntoView 会把外层会话流一起带跑）；给 sticky 组标题留 24px
+    const sticky = 24;
+    const top = current.el.offsetTop;
+    const bottom = top + current.el.offsetHeight;
+    if (top - sticky < el.cmdList.scrollTop) el.cmdList.scrollTop = Math.max(0, top - sticky - 4);
+    else if (bottom > el.cmdList.scrollTop + el.cmdList.clientHeight) {
+      el.cmdList.scrollTop = bottom - el.cmdList.clientHeight + 2;
+    }
+  }
+
+  /** 选中 = 插入（不发送）：`/name ` + 原有参数（若有），光标停在名字后的空格后 */
+  function insertCommand(item) {
+    const value = el.input.value;
+    const m = /^\/\S*/.exec(value);
+    const rest = (m ? value.slice(m[0].length) : value).replace(/^\s+/, "");
+    const next = `/${item.name} ${rest}`;
+    const caret = item.name.length + 2; // "/" + name + " "
+    el.input.value = next;
+    closeCommandPanel({ focus: false });
+    el.input.focus();
+    el.input.setSelectionRange(caret, caret);
+  }
+
+  /**
+   * 打开面板（异步：命令列表来自 /api/commands）。
+   * @param {object} [opts]
+   * @param {string} [opts.query] 覆盖查询（Ctrl+K/菜单入口传 ""）；缺省 = 取输入框里的斜杠查询
+   */
+  async function openCommandPanel(opts = {}) {
+    const query = opts.query ?? slashQuery(el.input.value) ?? "";
+    const mine = ++cmd.seq;
+    cmd.open = true;
+    cmd.active = 0;
+    el.cmdPanel.hidden = false;
+    el.input.setAttribute("aria-expanded", "true");
+    el.input.focus();
+    // 有缓存就先画（打开零延迟）；首次没有缓存则等一次 /api/commands（本地桥，毫秒级）
+    if (cmd.commands.length) paintCommandPanel(query);
+    const commands = await shell.loadCommands();
+    if (!cmd.open || mine !== cmd.seq) return; // 已被新一轮/关闭覆盖
+    cmd.commands = commands;
+    const live = slashQuery(el.input.value);
+    if (live == null && opts.query == null) {
+      closeCommandPanel({ focus: false }); // 等待期间用户已离开斜杠上下文
+      return;
+    }
+    paintCommandPanel(live ?? query);
+  }
+
+  function closeCommandPanel(opts = {}) {
+    if (!cmd.open) return;
+    cmd.open = false;
+    cmd.seq += 1; // 在飞的 openCommandPanel 结果作废
+    el.cmdPanel.hidden = true;
+    el.cmdList.replaceChildren();
+    cmd.visible = [];
+    el.input.setAttribute("aria-expanded", "false");
+    el.input.setAttribute("aria-activedescendant", "");
+    if (opts.focus !== false) {
+      el.input.focus();
+      const len = el.input.value.length;
+      el.input.setSelectionRange(len, len);
+    }
+  }
+
+  /** Ctrl+K / ⋯「命令面板」：已开则关（toggle） */
+  function toggleCommandPanel() {
+    if (cmd.open) {
+      closeCommandPanel();
+      return;
+    }
+    void openCommandPanel({ query: slashQuery(el.input.value) ?? "" });
+  }
+
+  /** 面板键盘：↑↓ / Home·End / PgUp·PgDn / Tab / Enter / Esc。返回 true = 已消费 */
+  function handleCommandPanelKey(ev) {
+    switch (ev.key) {
+      case "ArrowDown":
+        ev.preventDefault();
+        setCommandActive(cmd.active + 1);
+        return true;
+      case "ArrowUp":
+        ev.preventDefault();
+        setCommandActive(cmd.active - 1);
+        return true;
+      case "Home":
+        ev.preventDefault();
+        setCommandActive(0);
+        return true;
+      case "End":
+        ev.preventDefault();
+        setCommandActive(cmd.visible.length - 1);
+        return true;
+      case "PageDown":
+        ev.preventDefault();
+        setCommandActive(cmd.active + 10);
+        return true;
+      case "PageUp":
+        ev.preventDefault();
+        setCommandActive(cmd.active - 10);
+        return true;
+      case "Tab":
+        // Shift+Tab = 「离开输入框」逃生口（关面板、焦点正常后退）
+        if (ev.shiftKey) {
+          closeCommandPanel({ focus: false });
+          return false;
+        }
+        ev.preventDefault();
+        if (cmd.visible[cmd.active]) insertCommand(cmd.visible[cmd.active].cmd);
+        return true;
+      case "Enter":
+        // Ctrl/⌘+Enter = 正常发送，交回发送分支（先关面板）
+        if (ev.ctrlKey || ev.metaKey) {
+          closeCommandPanel({ focus: false });
+          return false;
+        }
+        ev.preventDefault();
+        if (cmd.visible[cmd.active]) insertCommand(cmd.visible[cmd.active].cmd);
+        return true;
+      case "Escape":
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeCommandPanel();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** 输入变化 → 打开/保持/关闭面板（只在「以 / 开头且无空白」时成立） */
+  function syncCommandPanel() {
+    if (cmd.justPasted) {
+      cmd.justPasted = false;
+      return;
+    }
+    const query = slashQuery(el.input.value);
+    if (query == null) {
+      closeCommandPanel({ focus: false });
+      return;
+    }
+    void openCommandPanel({ query });
+  }
+
+  el.input.addEventListener("input", syncCommandPanel);
+  // 粘贴不弹面板（多行 / 含 / 的文本粘贴不该打断），抑制一帧
+  el.input.addEventListener("paste", () => {
+    cmd.justPasted = true;
+    setTimeout(() => {
+      cmd.justPasted = false;
+    }, 0);
+    closeCommandPanel({ focus: false });
+  });
+
+  if (el.cmdClose) el.cmdClose.addEventListener("click", () => closeCommandPanel());
+
   // 键盘语义 = 终端习惯：Enter 换行；Ctrl(⌘)+Enter 发送；只作用于本列输入框
+  // 面板打开时 Enter/Tab = 选中高亮项（A2/A5），Esc = 关面板（焦点回输入框）
   el.input.addEventListener("keydown", (ev) => {
-    if (ev.isComposing || ev.keyCode === 229) return;
+    if (ev.isComposing || ev.keyCode === 229) return; // IME 组字中一律不拦键（P5）
+    if (cmd.open && handleCommandPanelKey(ev)) return;
     if (ev.key !== "Enter") return;
     if (!(ev.ctrlKey || ev.metaKey)) return;
     if (el.send.disabled) return;
     ev.preventDefault();
+    closeCommandPanel({ focus: false });
     c.submitPrompt(el.behavior.hidden ? undefined : el.behavior.value);
   });
+
+  c.openCommandPanel = openCommandPanel;
+  c.closeCommandPanel = closeCommandPanel;
+  c.toggleCommandPanel = toggleCommandPanel;
+  c.commandPanelOpen = () => cmd.open;
+  c.commandPanelContains = (node) => (el.cmdPanel && el.cmdPanel.contains(node)) || el.form.contains(node);
 
   el.abort.addEventListener("click", () => c.abort());
 

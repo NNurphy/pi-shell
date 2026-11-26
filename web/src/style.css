@@ -2257,86 +2257,118 @@ button {
 
 /* ============================== 命令面板 / 模态 / Toast ============================== */
 
-.palette {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 12vh;
-  background: var(--scrim);
-}
-.palette-box {
-  width: min(680px, 92vw);
-  max-height: 60vh;
+/* v1.3.0 行内斜杠命令面板：贴 composer 上沿，占流内空间（.log 相应变短），不是居中模态。
+   宽度跟随 composer 卡片（776），三列各自独立。 */
+.palette-inline {
   display: flex;
   flex-direction: column;
+  max-width: 776px;
+  margin: 0 auto var(--sp-2);
+  max-height: 336px;
   overflow: hidden;
   background: var(--canvas);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--e2);
+  box-shadow: var(--e1);
+  animation: palette-in var(--dur-2) var(--ease-std);
+}
+@keyframes palette-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .palette-inline { animation: none; }
 }
 .palette-head {
+  flex: 0 0 auto;
   display: flex;
+  align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-4);
+  height: 36px;
+  padding: 0 var(--sp-3) 0 var(--sp-5);
   border-bottom: 1px solid var(--line);
 }
-.palette-head input {
-  flex: 1 1 auto;
-  height: 30px;
-  padding: 0 var(--sp-4);
-  font: var(--fs-sm) / 1 var(--font-ui);
+.palette-query {
+  font: var(--fs-sm) / 20px var(--font-mono);
   color: var(--ink);
-  background: var(--canvas);
-  border: 1px solid var(--line-control);
-  border-radius: var(--r-sm);
 }
-.palette-head button {
-  width: 30px;
-  font: var(--fs-h2) / 1 var(--font-ui);
-  color: var(--ink-2);
-  background: transparent;
-  border: 1px solid var(--line-control);
+.palette-query .slash {
+  color: var(--accent-ink);
+}
+.palette-count {
+  font: var(--fs-micro) / 14px var(--font-mono);
+  color: var(--ink-3);
+}
+.palette-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
   border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--fs-h2);
+  line-height: 1;
+}
+.palette-close:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
 }
 .palette-list {
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  padding: var(--sp-2);
+  padding: var(--sp-2) 0;
   scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 .palette-source {
-  padding: var(--sp-3) var(--sp-4) var(--sp-1);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-5);
+  background: var(--canvas);
   font: var(--fs-micro) / 14px var(--font-mono);
   letter-spacing: 0.08em;
   color: var(--ink-3);
-  text-transform: uppercase;
 }
 .palette-item {
   display: flex;
+  align-items: center;
   gap: var(--sp-5);
   width: 100%;
-  min-height: 28px;
-  align-items: center;
-  padding: 0 var(--sp-4);
+  height: 28px;
+  padding: 0 var(--sp-5);
   text-align: left;
   color: var(--ink-2);
   background: transparent;
   border: 0;
-  border-radius: var(--r-sm);
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
 }
-.palette-item:hover,
-.palette-item[data-active="true"] {
+.palette-item:hover {
   background: var(--surface-hover);
   color: var(--ink);
 }
+.palette-item[aria-selected="true"] {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  color: var(--ink);
+}
 .palette-name {
-  font: var(--fs-sm) / 1 var(--font-mono);
+  flex: 0 0 auto;
+  font: var(--fs-sm) / 20px var(--font-mono);
+  color: var(--ink);
   white-space: nowrap;
 }
 .palette-desc {
+  flex: 1 1 auto;
   min-width: 0;
   font-size: var(--fs-label);
   color: var(--ink-3);
@@ -2344,10 +2376,53 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.palette-empty {
-  padding: var(--sp-5);
-  font-size: var(--fs-sm);
+.palette-flag {
+  flex: 0 0 auto;
+  font: var(--fs-micro) / 14px var(--font-mono);
   color: var(--ink-3);
+}
+.palette-empty {
+  padding: var(--sp-6) var(--sp-5);
+}
+.palette-empty .t {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+.palette-empty .h {
+  margin: 0;
+  font-size: var(--fs-label);
+  color: var(--ink-3);
+}
+.palette-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--sp-5);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  font: var(--fs-micro) / 14px var(--font-mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 宽度跟 composer 卡片走（单列 860 / 多列铺满）——否则面板会比输入框窄一截（廉价下拉感） */
+@media (min-width: 769px) {
+  body[data-cols="1"] .palette-inline { max-width: min(100%, 860px); }
+  body[data-cols="2"] .palette-inline,
+  body[data-cols="3"] .palette-inline { max-width: none; }
+}
+/* 小屏降级（小屏：面板铺满列宽，触摸命中区 44）：面板铺满列宽、触摸行/关闭命中区 44 */
+@media (max-width: 1099px) {
+  .palette-inline { max-height: 280px; }
+}
+@media (max-width: 820px) {
+  .palette-inline { max-height: 240px; }
+  .palette-item { height: 44px; }
+  .palette-close { width: 44px; height: 44px; }
+  .palette-head { height: 44px; }
 }
 
 .modal {
@@ -3595,4 +3670,500 @@ body.resizing embed {
   padding: var(--sp-3);
   font-size: var(--fs-label);
   color: var(--ink-3);
+}
+/* ============================ v1.3.0 计划协议：计划模式条 + 计划卡片 ============================ */
+/* 卡片状态由「消息标记 + 计划文件」派生，样式只负责三种态的外观。
+   卡片是「轮内附件块」：与 .msg / .entry 同处一条时间线（左轨对齐正文），不浮起（无阴影）。 */
+
+/* ---- 计划模式条（composer 卡片内最上方，B4） ---- */
+.plan-mode {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: calc(-1 * var(--sp-5)) calc(-1 * var(--sp-5)) 0;
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--line);
+  border-radius: calc(var(--r-md) - 1px) calc(var(--r-md) - 1px) 0 0;
+  font: var(--fs-label) / var(--lh-label) var(--font-ui);
+  color: var(--accent-ink);
+}
+.plan-mode-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+.plan-mode-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-mode-x {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 15px;
+  line-height: 24px;
+}
+.plan-mode-x:hover {
+  background: rgba(28, 27, 25, 0.06);
+}
+
+/* ---- 卡片容器 ---- */
+.plan-card {
+  position: relative;
+  margin: calc(-1 * var(--sp-4)) 0 var(--sp-8) var(--turn-rail);
+  background: var(--canvas);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  transition: border-color var(--dur-2) var(--ease-std);
+}
+.plan-card .plan-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--warning);
+  transition: background-color var(--dur-2) var(--ease-std);
+}
+.plan-card[data-state="generating"] .plan-bar,
+.plan-card[data-state="revising"] .plan-bar {
+  background: var(--accent);
+}
+.plan-card[data-state="approved"] .plan-bar {
+  background: var(--success);
+}
+.plan-card[data-state="missing"] .plan-bar,
+.plan-card[data-state="error"] .plan-bar {
+  background: var(--danger);
+}
+
+.plan-head {
+  padding: var(--sp-5) var(--sp-5) var(--sp-3) calc(var(--sp-5) + 2px);
+}
+.plan-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--ink);
+}
+.plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: var(--sp-1) 0 0;
+  font: var(--fs-micro) / var(--lh-micro) var(--font-mono);
+  color: var(--ink-3);
+}
+.plan-src {
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-ver {
+  color: var(--ink-2);
+}
+.plan-vers {
+  display: inline-flex;
+  gap: var(--sp-2);
+}
+.plan-ver-btn {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dotted var(--line-control);
+  background: transparent;
+  font: var(--fs-micro) / var(--lh-micro) var(--font-mono);
+  color: var(--ink-2);
+}
+.plan-ver-btn:hover {
+  color: var(--accent-ink);
+  border-bottom-color: var(--accent);
+}
+
+/* ---- 提示条（缺失 / 读取失败 / 历史版本） ---- */
+.plan-notice {
+  margin: 0 var(--sp-5) var(--sp-3) calc(var(--sp-5) + 2px);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--ink-2);
+}
+.plan-notice[data-kind="missing"],
+.plan-notice[data-kind="error"] {
+  background: var(--danger-soft);
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+.plan-notice .path {
+  margin-top: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  color: var(--ink-2);
+  word-break: break-all;
+}
+.plan-notice .notice-btns {
+  display: flex;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+
+/* ---- 目录（展开后出现） ---- */
+.plan-toc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0 var(--sp-5) var(--sp-3);
+  padding: 0 0 var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.plan-toc .lab {
+  font: var(--fs-micro) / var(--lh-micro) var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+.plan-toc a {
+  font-size: var(--fs-label);
+  line-height: 16px;
+  color: var(--ink-2);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.plan-toc a:hover {
+  color: var(--accent-ink);
+  border-bottom-color: var(--accent);
+}
+
+/* ---- 正文 ---- */
+.plan-body {
+  position: relative;
+  padding: 0 var(--sp-5) var(--sp-4) calc(var(--sp-5) + 2px);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.plan-card.is-long .plan-body:not(.expanded) {
+  max-height: 352px;
+  overflow: hidden;
+}
+.plan-card.is-long .plan-body.expanded {
+  max-height: 46vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+.plan-body > *:first-child {
+  margin-top: 0;
+}
+.plan-body p {
+  margin: 0 0 var(--sp-3);
+}
+.plan-body h1,
+.plan-body h2 {
+  margin: var(--sp-5) 0 var(--sp-2);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+.plan-body h3 {
+  margin: var(--sp-4) 0 var(--sp-1);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.plan-body ul,
+.plan-body ol {
+  margin: 0 0 var(--sp-3);
+  padding-left: var(--sp-7);
+}
+.plan-body li {
+  margin-bottom: var(--sp-1);
+}
+.plan-body code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  background: var(--surface-sunken);
+  border-radius: var(--r-xs);
+  padding: 1px 3px;
+}
+.plan-body pre {
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-4);
+  background: var(--surface-sunken);
+  border-radius: var(--r-sm);
+  overflow-x: auto;
+}
+.plan-body pre code {
+  background: none;
+  padding: 0;
+  font-size: var(--fs-code);
+  line-height: 20px;
+}
+.plan-body table {
+  width: 100%;
+  margin: 0 0 var(--sp-4);
+  border-collapse: collapse;
+  font-size: var(--fs-label);
+}
+.plan-body th,
+.plan-body td {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  text-align: left;
+}
+.plan-body blockquote {
+  margin: 0 0 var(--sp-3);
+  padding-left: var(--sp-4);
+  border-left: 2px solid var(--line-strong);
+  color: var(--ink-2);
+}
+
+/* ---- 折叠条 ---- */
+.plan-more {
+  border-top: 1px solid var(--line);
+}
+.plan-more button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--sp-5) 0 calc(var(--sp-5) + 2px);
+  border: 0;
+  background: transparent;
+  font-size: var(--fs-label);
+  color: var(--ink-2);
+  text-align: left;
+}
+.plan-more button:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+/* ---- 骨架（生成中 / 修改中） ---- */
+.plan-skel {
+  padding: var(--sp-2) var(--sp-5) var(--sp-5) calc(var(--sp-5) + 2px);
+}
+.plan-skel-text {
+  margin-bottom: var(--sp-3);
+  font: var(--fs-micro) / var(--lh-micro) var(--font-mono);
+  color: var(--ink-3);
+}
+.plan-skel-bars {
+  display: grid;
+  gap: var(--sp-3);
+}
+.plan-skel-bars i {
+  display: block;
+  height: 14px;
+  border-radius: var(--r-xs);
+  background: var(--surface-hover);
+  animation: plan-breathe 1.2s ease-in-out infinite;
+}
+.plan-skel-bars i:nth-child(2) {
+  width: 86%;
+  animation-delay: 0.15s;
+}
+.plan-skel-bars i:nth-child(3) {
+  width: 64%;
+  animation-delay: 0.3s;
+}
+@keyframes plan-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ---- 修改意见框（C4） ---- */
+.plan-revise {
+  padding: 0 var(--sp-5) var(--sp-4) calc(var(--sp-5) + 2px);
+}
+.plan-revise textarea {
+  width: 100%;
+  min-height: 60px;
+  max-height: 30vh;
+  padding: var(--sp-3) var(--sp-4);
+  font: var(--fs-label) / var(--lh-label) var(--font-ui);
+  color: var(--ink);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  resize: vertical;
+}
+.plan-revise textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.plan-revise .hint {
+  margin: var(--sp-2) 0 var(--sp-3);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  color: var(--ink-3);
+}
+.plan-revise .btns {
+  display: flex;
+  gap: var(--sp-3);
+}
+
+/* ---- 动作条 ---- */
+.plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--line);
+  background: var(--canvas);
+}
+.plan-actions[hidden] {
+  display: none;
+}
+.plan-actions .grow {
+  flex: 1 1 auto;
+}
+.plan-actions .plan-quiet {
+  display: flex;
+  gap: var(--sp-2);
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.plan-card button.btn-primary,
+.plan-card button.btn-ghost,
+.plan-card button.btn-quiet {
+  height: 28px;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font: var(--fs-label) / var(--lh-label) var(--font-ui);
+  white-space: nowrap;
+}
+.plan-card button.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ink-inverse);
+}
+.plan-card button.btn-primary:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+}
+.plan-card button.btn-primary:disabled {
+  background: var(--surface-hover);
+  border-color: var(--line);
+  color: var(--ink-3);
+  cursor: default;
+}
+.plan-card button.btn-ghost {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--ink-2);
+}
+.plan-card button.btn-ghost:hover:not(:disabled) {
+  border-color: var(--ink-3);
+  color: var(--ink);
+}
+.plan-card button.btn-ghost:disabled {
+  color: var(--ink-3);
+  border-color: var(--line);
+  cursor: default;
+}
+.plan-card button.btn-quiet {
+  background: transparent;
+  color: var(--ink-2);
+}
+.plan-card button.btn-quiet:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.plan-card button.btn-quiet:disabled {
+  color: var(--ink-3);
+  cursor: default;
+}
+.plan-card .plan-notice .btn-quiet {
+  height: 24px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--canvas);
+  font-size: var(--fs-micro);
+  color: var(--ink-2);
+}
+/* 全屏唯一 primary（§2.2 C2 / §3.6 多列降级）：非活动列的「开始实施」降为 ghost 观感。
+   点击非活动列的任意动作都会先经列根的 pointerdown 激活该列（column.js），所以不额外拦点击。 */
+.column:not(.is-active) .plan-card[data-state="pending"] button.btn-primary {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--ink-2);
+}
+.column:not(.is-active) .plan-card[data-state="pending"] button.btn-primary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--ink-3);
+  color: var(--ink);
+}
+
+.plan-error {
+  margin: 0 var(--sp-5) var(--sp-3) calc(var(--sp-5) + 2px);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--danger-soft);
+  border-left: 2px solid var(--danger);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+  font-size: var(--fs-micro);
+  line-height: var(--lh-micro);
+  color: var(--danger);
+}
+
+/* 列宽变窄：正文降一档字号（§3.6）、按钮加高一档 */
+@media (max-width: 1100px) {
+  .plan-body {
+    font-size: var(--fs-sm);
+  }
+  .plan-card .btn-primary,
+  .plan-card .btn-ghost,
+  .plan-card .btn-quiet {
+    height: 32px;
+  }
+}
+/* 触摸端（≤820）：按钮 44 高，quiet 组整组落到第二行右对齐 */
+@media (max-width: 820px) {
+  .plan-card {
+    margin-left: 0;
+  }
+  .plan-card .btn-primary,
+  .plan-card .btn-ghost,
+  .plan-card .btn-quiet {
+    height: 44px;
+    padding: 0 var(--sp-5);
+  }
+  .plan-actions .plan-quiet {
+    margin-left: 0;
+  }
+  .plan-mode-x {
+    width: 32px;
+    height: 32px;
+    line-height: 32px;
+  }
 }

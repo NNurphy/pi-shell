@@ -170,8 +170,25 @@
               <p id="notice" class="notice" data-role="notice" hidden></p>
               <div id="attach-bar" class="attach-bar" data-role="attach-bar" hidden></div>
               <form id="composer" class="composer" data-role="composer" data-streaming="false">
+                <!-- v1.3.0 行内斜杠命令面板：贴 composer 上沿、占流内空间（不遮会话流、不改滚动位置）。
+                     每列各一份（列模板克隆），id 由 column.js 在运行时按列键补（避免三列 id 冲突）。 -->
+                <div class="palette-inline" data-role="cmd-panel" role="listbox" aria-label="斜杠命令" hidden>
+                  <div class="palette-head">
+                    <span class="palette-query" data-role="cmd-query">/</span>
+                    <span class="grow"></span>
+                    <span class="palette-count" data-role="cmd-count" aria-live="polite"></span>
+                    <button class="palette-close" data-role="cmd-close" type="button" aria-label="关闭命令面板" title="关闭（Esc）">×</button>
+                  </div>
+                  <div class="palette-list" data-role="cmd-list" role="presentation"></div>
+                  <div class="palette-foot" aria-hidden="true">↑↓ 选择 · Enter/Tab 插入 · Esc 关闭</div>
+                </div>
                 <div class="composer-card">
-                  <textarea id="input" data-role="composer-input" rows="3" placeholder="输入消息（Enter 换行 · Ctrl+Enter 发送 · Ctrl+K 命令面板 · Ctrl+U 注入文件）"></textarea>
+                  <div class="plan-mode" data-role="plan-mode" hidden>
+                    <span class="plan-mode-dot" aria-hidden="true"></span>
+                    <span class="plan-mode-text">计划模式 · 只做计划，不改文件</span>
+                    <button type="button" class="plan-mode-x" data-role="plan-mode-close" title="退出计划模式" aria-label="退出计划模式">×</button>
+                  </div>
+                  <textarea id="input" data-role="composer-input" rows="3" role="combobox" aria-expanded="false" aria-controls="" aria-autocomplete="list" aria-activedescendant="" aria-label="消息输入，输入 / 打开命令面板" placeholder="输入消息（Enter 换行 · Ctrl+Enter 发送 · / 或 Ctrl+K 命令面板 · Ctrl+U 注入文件）"></textarea>
                   <div class="composer-toolbar">
                     <div id="attach-buttons" class="attach-buttons" data-role="attach-buttons">
                       <label class="file-label" title="附加图片">图片
@@ -309,16 +326,6 @@
           <button id="picker-cancel" type="button" data-role="picker-cancel">取消</button>
           <button id="picker-confirm" type="button" class="picker-confirm" data-role="picker-confirm">新建会话</button>
         </div>
-      </div>
-    </div>
-
-    <div id="palette" class="palette" hidden>
-      <div class="palette-box">
-        <div class="palette-head">
-          <input id="palette-input" placeholder="搜索命令 / 技能 / 模板…" />
-          <button id="palette-close" type="button">×</button>
-        </div>
-        <div id="palette-list" class="palette-list"></div>
       </div>
     </div>
 

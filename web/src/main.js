@@ -50,10 +50,6 @@ const els = {
   model: $("model-select"),
   reloadModels: $("reload-models"),
   thinking: $("thinking-select"),
-  palette: $("palette"),
-  paletteInput: $("palette-input"),
-  paletteList: $("palette-list"),
-  paletteClose: $("palette-close"),
   openPalette: $("open-palette"),
   newSession: $("new-session"),
   brandHome: $("brand-home"),
@@ -1274,83 +1270,44 @@ els.restartClose.addEventListener("click", () => {
   els.restartOverlay.hidden = true;
 });
 
-// ---------- 命令面板（T-11） ----------
+// ---------- 斜杠命令（v1.3.0）：数据层在这里，面板 DOM/交互在每列内（column.js） ----------
+// 为什么拆开：命令数据是全局的（/api/commands），面板必须作用于「触发它的那一列」的输入框。
+// 旧实现（居中模态 #palette）已删除：选中即发送、× 与 ⋯ 菜单项从未绑定事件。
 
-let paletteCommands = [];
+let commandCache = [];
+let commandInflight = null;
+let commandFetchedAt = 0;
+// 每敲一个字符都会走一次「保持面板」→ 命令清单不该每键一次 RPC（1s 内的重复请求直接吃缓存）
+const COMMAND_TTL_MS = 1000;
 
-async function togglePalette(force) {
-  const show = force ?? els.palette.hidden;
-  if (!show) {
-    els.palette.hidden = true;
-    return;
-  }
-  try {
-    const { commands } = await (await fetch("/api/commands", { cache: "no-store" })).json();
-    paletteCommands = commands ?? [];
-  } catch (err) {
-    paletteCommands = [];
-    showNotice(`读取命令失败：${err.message}`, true);
-  }
-  els.palette.hidden = false;
-  els.paletteInput.value = "";
-  paintPalette("");
-  els.paletteInput.focus();
-}
-
-const SOURCE_LABEL = { extension: "扩展命令", prompt: "提示词模板", skill: "技能" };
-
-function paintPalette(query) {
-  const q = query.trim().toLowerCase();
-  els.paletteList.replaceChildren();
-  const groups = new Map();
-  for (const cmd of paletteCommands) {
-    const name = String(cmd.name ?? "");
-    if (!name) continue;
-    if (q && !name.toLowerCase().includes(q) && !String(cmd.description ?? "").toLowerCase().includes(q)) continue;
-    const key = cmd.source || "other";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(cmd);
-  }
-  for (const [source, items] of groups) {
-    const head = document.createElement("div");
-    head.className = "palette-source";
-    head.textContent = SOURCE_LABEL[source] || source;
-    els.paletteList.appendChild(head);
-    for (const cmd of items) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "palette-item";
-      row.dataset.command = cmd.name;
-      const name = document.createElement("span");
-      name.className = "palette-name";
-      name.textContent = `/${cmd.name}`;
-      const desc = document.createElement("span");
-      desc.className = "palette-desc";
-      desc.textContent = cmd.description || "";
-      row.append(name, desc);
-      row.addEventListener("click", () => {
-        const col = activeColumn();
-        if (!col) return;
-        els.palette.hidden = true;
-        col.el.input.value = `/${cmd.name}`;
-        col.submitPrompt(undefined); // 选中即发送对应字面量（只作用于当前列）
-      });
-      els.paletteList.appendChild(row);
+/** 取命令列表：并发只跑一次，失败回退上次缓存（不 reject，面板自己显示空态） */
+function loadCommands() {
+  if (commandInflight) return commandInflight;
+  if (commandCache.length && Date.now() - commandFetchedAt < COMMAND_TTL_MS) return Promise.resolve(commandCache);
+  commandInflight = (async () => {
+    try {
+      const res = await fetch("/api/commands", { cache: "no-store" });
+      const body = await res.json();
+      commandCache = Array.isArray(body?.commands) ? body.commands : [];
+      commandFetchedAt = Date.now();
+    } catch (err) {
+      showNotice(`读取命令失败：${err.message}`, true);
+    } finally {
+      commandInflight = null;
     }
-  }
-  if (!els.paletteList.childElementCount) {
-    const empty = document.createElement("div");
-    empty.className = "palette-empty";
-    empty.textContent = "没有匹配的命令";
-    els.paletteList.appendChild(empty);
-  }
+    return commandCache;
+  })();
+  return commandInflight;
 }
 
-els.paletteInput.addEventListener("input", () => paintPalette(els.paletteInput.value));
-els.paletteInput.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") els.palette.hidden = true;
-  if (ev.key === "Enter") els.paletteList.querySelector(".palette-item")?.click();
-});
+if (els.openPalette) {
+  // ⋯ 菜单 →「命令面板」：过去注册了元素但从未绑定（点了没反应）
+  els.openPalette.addEventListener("click", () => {
+    const col = activeColumn();
+    if (!col) return;
+    col.openCommandPanel({ query: "" });
+  });
+}
 
 // ---------- 偏好（T-21）：localStorage + 降级 ----------
 
@@ -2687,8 +2644,28 @@ async function previewFile(filePath) {
       box.appendChild(note);
     }
     els.panelBody.appendChild(box);
+    return true;
   } catch (err) {
     showNotice(`预览失败：${err.message}`, true);
+    return false;
+  }
+}
+
+/**
+ * v1.3.0 计划卡片「查看源文件」：复用既有文件面板，定位到该计划文件。
+ * rel 是相对引擎 cwd 的路径（/api/file 的沙箱口径）；打开失败返回 false，由卡片降级为「复制路径 + toast」。
+ */
+async function openPlanSource(rel, abs) {
+  if (!els.panelBody) return false;
+  try {
+    openPanel("文件", {});
+    const head = document.createElement("div");
+    head.className = "panel-note";
+    head.textContent = abs ? `计划源文件：${abs}` : `计划源文件：${rel}`;
+    els.panelBody.appendChild(head);
+    return await previewFile(rel);
+  } catch {
+    return false;
   }
 }
 
@@ -3170,13 +3147,20 @@ const shell = {
   syncHeaderFromSession: (col, opts) => syncHeaderFromSession(col, opts),
   // A1：新会话前先选项目目录（弹层归外壳，POST 归列 → 只影响本列引擎）
   pickCwd: (col) => pickProjectDir(col),
+  // v1.3.0 斜杠命令：命令数据一处取（每列面板共用），见 loadCommands()
+  loadCommands,
+  commandsCached: () => commandCache,
   // P0：前端兜底恢复模型被引擎拒绝（404/400）→ 顶栏标「该模型不可用」+ 提示（不静默退回默认）
   modelUnavailable: (col, model, err) => reportModelUnavailable(col, model, err),
+  // v1.3.0 计划卡片「查看源文件」：复用文件面板（返回 false = 卡片降级为复制路径）
+  openPlanSource: (rel, abs) => openPlanSource(rel, abs),
 };
 
 function setActive(col) {
   if (!col || col.key === activeKey) return;
   activeKey = col.key;
+  // v1.3.0：切换列 → 其他列的命令面板关闭（面板只作用于触发它的那一列）
+  for (const other of columns) if (other !== col) other.closeCommandPanel({ focus: false });
   maybeApplyLayout(); // 活动列变了：窄屏下可见列要跟着换
   syncHeaderFromSession(col, { delay: 0 });
   columnUpdated(col);
@@ -3505,18 +3489,35 @@ document.addEventListener("keydown", (ev) => {
       els.toggleSidebar?.focus();
       return;
     }
+    // v1.3.0：斜杠命令面板开着时，Esc 只关面板（焦点回输入框，不中止回答）
+    const colWithPanel = columns.find((c) => c.commandPanelOpen());
+    if (colWithPanel) {
+      ev.preventDefault();
+      colWithPanel.closeCommandPanel();
+      return;
+    }
     ev.preventDefault();
     activeColumn()?.abort(); // Esc = clear_queue 后 abort（只中止当前列）
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "k") {
     ev.preventDefault();
-    togglePalette();
+    activeColumn()?.toggleCommandPanel(); // v1.3.0：行内面板（等价入口，已开则关）
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "u") {
     ev.preventDefault();
     activeColumn()?.openFilePicker();
+  }
+});
+
+// ---------- v1.3.0：点面板外关闭斜杠命令面板 ----------
+// 面板与 composer 卡片是同一组控件（点输入框/发送按钮不算面板外）；其他任何地方都算。
+document.addEventListener("mousedown", (ev) => {
+  for (const col of columns) {
+    if (!col.commandPanelOpen()) continue;
+    if (col.commandPanelContains(ev.target)) continue;
+    col.closeCommandPanel({ focus: false });
   }
 });
 
@@ -3691,7 +3692,8 @@ window.__piShell = {
     return { sessionId: data?.sessionId ?? null, entries: data?.entries?.length ?? 0 };
   },
   collapseState: getCollapseState,
-  togglePalette,
+  // v1.3.0：旧的居中模态入口名保留（验收脚本/扩展可能还在调），行为 = 活动列的行内面板 toggle
+  togglePalette: () => activeColumn()?.toggleCommandPanel(),
   // B1/T6：验收脚本强制重同步顶栏（与用户切列/开会话走的同一个入口）
   syncHeader: (opts) => syncHeaderFromSession(activeColumn(), { delay: 0, force: true, ...(opts || {}) }),
   get sessionView() {
