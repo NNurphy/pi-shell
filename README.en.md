@@ -8,7 +8,7 @@ English · **[简体中文](README.md)**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node: ≥22.19](https://img.shields.io/badge/node-%E2%89%A522.19-green.svg)](https://nodejs.org)
-[![Tests: 226/226](https://img.shields.io/badge/tests-226%2F226-brightgreen.svg)](bridge/test)
+[![Tests: 230/230](https://img.shields.io/badge/tests-230%2F230-brightgreen.svg)](bridge/test)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-success.svg)](bridge/package.json)
 [![Platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-tested-informational.svg)](#faq)
 
@@ -149,6 +149,35 @@ Prerequisite: install [Tailscale](https://tailscale.com) on both the PC and the 
 - **Never open the same session in a terminal and pi-shell at once** — pi has no session locking and pi-shell cannot detect it; all it can do is warn and back up (see `docs/03-design.md` §9).
 - **If you start the bridge from a script, ignore its stdio** — logs mirror to stderr only on a TTY; piping stdio without consuming it will deadlock it (H-15).
 
+## Slash commands and plans
+
+**Slash commands** — with an empty input box, typing `/` opens the candidate list right above the composer (or press `Ctrl+K`). Keep typing to filter live (names and descriptions, case-insensitive).
+
+| Action | Key / click |
+|---|---|
+| Move the highlight | `↑` `↓` · `PgUp`/`PgDn` · `Home`/`End` · mouse hover |
+| Select (inserts, does not send) | `Enter` / `Tab` / click |
+| Close the panel | `Esc` / `×` in the panel / click outside |
+| Send the message | `Ctrl+Enter` (`Enter` inserts a newline) |
+
+- Selecting puts `/name ` in the input box with the caret right after the name — keep typing the arguments yourself; **selecting never sends for you**.
+- Candidates come in four groups: extension commands / prompt templates / skills / built-in.  A trailing “takes arguments” or “no arguments” label tells you whether more input is expected.
+- The command list comes from your own pi install (extensions, prompt templates, skills — per column, per session). pi-shell adds one built-in command on top: `plan` (see below).
+
+**Plans (`/plan`)** — to get a written plan before any code changes, send a message that starts with `/plan`:
+
+```
+/plan add a project filter to the session list
+```
+
+1. The bridge rewrites that message into a planning instruction for pi: plan only, change no files, write the plan into `.pi/plans/<name>.md` inside the project, and end the reply with a single line `PLAN_READY: <path>`. The message you sent still shows up in the conversation as you typed it.
+2. The page hides that marker line and renders a **plan card** at the end of the turn (title, last-updated time, version, body); long plans collapse by default. “View source file” jumps to the file, and the card can be copied.
+3. Two actions on the card: **Start implementation** sends “plan approved: <path>; implement it as written”, and **Request changes** opens a comment box whose feedback goes back to the agent — it rewrites the same file and the card bumps its version in place (v1 → v2, older versions stay switchable).
+4. While a plan is pending, a “plan mode · plan only, no file changes” bar sits above the composer; `×` only hides it in memory, and sending any message that does not start with `/plan` clears it too.
+5. Plan files are **read-only** (no editing, no plan library): the bridge only reads from three allow-listed roots — the column's workspace subtree, `~/.pi/agent/plans`, `~/.claude/plans` — only `.md`/`.markdown`/`.txt`, max 2 MiB per file. If the file is deleted or renamed, the card says “file missing”.
+
+**Note** — `/plan` is implemented by rewriting the prompt inside the pi-shell bridge, not by pi itself: running `pi` in a terminal does not give you this. And “plan only, no file changes” is a prompt-level constraint, not an enforced gate — the model can still touch files while planning.
+
 ## How it works
 
 ```
@@ -189,6 +218,20 @@ As of v1.2.0, **attaching no longer depends on an RPC that packs the whole sessi
 </details>
 
 <details>
+<summary><b>Why didn't the message send after I picked a slash command?</b></summary>
+
+That's intentional since v1.3.0: selecting only inserts <code>/name </code> into the input box (caret right after the name) so you can add arguments and double-check before sending. Press <code>Ctrl+Enter</code> to send; press <code>Esc</code> to close the panel — nothing you typed is lost.
+
+</details>
+
+<details>
+<summary><b>Where do plan files live? The model still changed files while planning</b></summary>
+
+Plans are written <strong>inside the project</strong> at <code>.pi/plans/&lt;name&gt;.md</code> (written by the agent, read-only for the bridge); add <code>.pi/plans/</code> to your ignore list to keep it out of git. “Plan only, no file changes” is a prompt-level constraint, <strong>not an enforced gate</strong> — if the model touched files while planning, check <code>git diff</code> and revert; the card itself is read-only.
+
+</details>
+
+<details>
 <summary><b>How do I update pi-shell</b></summary>
 
 <code>git pull</code> inside the clone, then restart (tray right-click "Restart", or close the launcher window / Ctrl+C and start again). The bridge is stateless — an upgrade is just a swap.
@@ -220,8 +263,8 @@ Developed and tested on Windows 11 + Node 24; other platforms are not systematic
 | **Verify it** (what, how long, criteria) | [`docs/06-traceability-and-test.md`](docs/06-traceability-and-test.md) |
 | **Troubleshoot / release / roll back** | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
 | **See what's in this release** | [`CHANGELOG.md`](CHANGELOG.md), [`RELEASE-NOTES.md`](RELEASE-NOTES.md), [`docs/WHATS-NEW.md`](docs/WHATS-NEW.md) |
-| **See proof it really ran** | [`bridge/test/`](bridge/test) (unit tests, fixture sessions only — `cd bridge && npm test` should print **226/226**) |
-| **Bail out** | stop process → delete the clone → `git clone` again → `cd bridge && npm test` (expect 226/226) |
+| **See proof it really ran** | [`bridge/test/`](bridge/test) (unit tests, fixture sessions only — `cd bridge && npm test` should print **230/230**) |
+| **Bail out** | stop process → delete the clone → `git clone` again → `cd bridge && npm test` (expect 230/230) |
 
 More background (Chinese): contract & measured facts (`docs/03-design.md`, the single source of truth), requirements & acceptance (`docs/02-prd.md`), decision log (`docs/05-decisions-and-open-questions.md`), glossary (`docs/00-glossary.md`), product brief (`docs/PRODUCT-BRIEF.md`), visual system (`docs/DESIGN-SYSTEM.md`).
 

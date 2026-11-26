@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node: ≥22.19](https://img.shields.io/badge/node-%E2%89%A522.19-green.svg)](https://nodejs.org)
-[![Tests: 226/226](https://img.shields.io/badge/tests-226%2F226-brightgreen.svg)](bridge/test)
+[![Tests: 230/230](https://img.shields.io/badge/tests-230%2F230-brightgreen.svg)](bridge/test)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-success.svg)](bridge/package.json)
 [![Platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-tested-informational.svg)](#常见问题)
 
@@ -149,6 +149,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
 - **不要和终端同开同一个会话**：pi 没有会话锁，pi-shell 检测不到，只能提示 + 备份（见 `docs/03-design.md` §9）。
 - **脚本方式启动请忽略 stdio**：桥的日志只在 TTY 上镜像到 stderr；用管道接管 stdio 又不消费，会卡死（H-15）。
 
+## 斜杠命令与计划
+
+**斜杠命令**：输入框为空时打 `/`，候选列表就贴在输入框上沿展开（也可以 `Ctrl+K` 打开）。继续打字实时过滤（命令名和描述都参与匹配，忽略大小写）。
+
+| 操作 | 键 / 点击 |
+|---|---|
+| 上下移动高亮 | `↑` `↓` · `PgUp`/`PgDn` · `Home`/`End` · 鼠标悬停 |
+| 选中（插入，不发送） | `Enter` / `Tab` / 点击 |
+| 关闭面板 | `Esc` / 右上角 `×` / 点面板外面 |
+| 发送消息 | `Ctrl+Enter`（`Enter` 是换行） |
+
+- 选中后输入框里是 `/命令名 `，光标停在名字后面，直接接着打参数；**选中不会替你发送**。
+- 候选分四组：扩展命令 / 提示词模板 / 技能 / 内置命令；行尾标「可追加内容」表示这条后面可以接参数，「无参」表示不需要。
+- 命令清单来自你本机 pi 的扩展、提示词模板与技能（各列按自己的会话取），pi-shell 另外追加一个内置的 `plan`（见下）。
+
+**计划（`/plan`）**：想让 AI 先出方案再动手，就发一条以 `/plan` 开头的消息：
+
+```
+/plan 给会话列表加一个按项目过滤的输入框
+```
+
+1. 桥会把这条消息改写成「计划阶段」指令发给 pi：只做计划、不改文件、把计划写进项目内的 `.pi/plans/<名字>.md`、回复末尾单独一行 `PLAN_READY: <路径>`。页面里显示的用户消息仍然是你输入的原文。
+2. 页面把那一行标记隐藏，并在这轮对话末尾渲染**计划卡片**（标题、更新时间、版本号、正文）；长计划默认折叠，点开看全文。卡片可从「查看源文件」定位到文件，也能「复制」。
+3. 卡片上两个动作：「**开始实施**」发给 AI「计划已批准：<路径>。请按计划实施。」；「**要求修改**」展开意见框，提交后带意见让 AI 改同一个文件，卡片按文件修改时间**原地升版**（v1 → v2，旧版本可切回来看）。
+4. 计划阶段输入框上方会显示「计划模式 · 只做计划，不改文件」；点 `×` 只关掉这条提示，发一条不以 `/plan` 开头的消息后它也会自动收起。
+5. 计划文件是**只读**的（不做编辑保存、不做计划库）：桥只从三处白名单读——当前列的工作区子树、`~/.pi/agent/plans`、`~/.claude/plans`；只认 `.md`/`.markdown`/`.txt`，单文件上限 2 MiB。文件被删或改名后，卡片显示「文件缺失」。
+
+**注意**：`/plan` 由 pi-shell 的桥侧改写实现，不是 pi 自带的命令——直接在终端里跑 `pi` 不会获得这个能力；「只做计划、不改文件」是提示词约束，不拦工具调用，AI 仍可能在计划阶段动到文件。
+
 ## 工作原理
 
 ```
@@ -189,6 +218,20 @@ v1.2.0 起**接管不再依赖「一行装下整个会话」的 RPC**：打开 /
 </details>
 
 <details>
+<summary><b>斜杠面板选中之后，为什么消息没发出去？</b></summary>
+
+v1.3.0 起这是有意为之：选中只是把 <code>/命令名 </code> 插进输入框（光标停在名字后面），方便你先补参数、确认无误再发。补完参数按 <code>Ctrl+Enter</code> 发送；不想发了按 <code>Esc</code> 关面板，已输入的文字不会丢。
+
+</details>
+
+<details>
+<summary><b>计划卡片里的文件在哪？AI 计划阶段还是改了文件怎么办？</b></summary>
+
+计划默认写在<strong>项目内</strong>的 <code>.pi/plans/&lt;名字&gt;.md</code>（由 AI 写入，桥只读）；不想让它进 git，把 <code>.pi/plans/</code> 加进忽略列表即可。计划阶段「只做计划、不改文件」只是提示词约束，<strong>不拦工具调用</strong>——如果 AI 在计划阶段动了文件，用 <code>git diff</code> 核对后回退即可；卡片本身只读，不提供编辑保存。
+
+</details>
+
+<details>
 <summary><b>如何更新 pi-shell</b></summary>
 
 在 clone 目录里 <code>git pull</code>，然后重启（托盘右键「重启」，或关掉启动窗口 / Ctrl+C 后再启动）。桥无状态，升级即换新。
@@ -220,8 +263,8 @@ v1.2.0 起**接管不再依赖「一行装下整个会话」的 RPC**：打开 /
 | **验收**（跑什么、多久、判据） | [`docs/06-traceability-and-test.md`](docs/06-traceability-and-test.md) |
 | **排障 / 发布 / 回滚** | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
 | **这个版本有什么** | [`CHANGELOG.md`](CHANGELOG.md)、[`RELEASE-NOTES.md`](RELEASE-NOTES.md)、[`docs/WHATS-NEW.md`](docs/WHATS-NEW.md) |
-| **断言"真跑过"** | [`bridge/test/`](bridge/test)（单测全部用夹具会话，`cd bridge && npm test` 应 **226/226**） |
-| **坏了怎么退** | 停进程 → 删 clone 目录 → 重新 `git clone` → `cd bridge && npm test`（应 226/226） |
+| **断言"真跑过"** | [`bridge/test/`](bridge/test)（单测全部用夹具会话，`cd bridge && npm test` 应 **230/230**） |
+| **坏了怎么退** | 停进程 → 删 clone 目录 → 重新 `git clone` → `cd bridge && npm test`（应 230/230） |
 
 更多背景：契约与实测事实（`docs/03-design.md`，唯一事实来源）、需求与验收（`docs/02-prd.md`）、决策记录（`docs/05-decisions-and-open-questions.md`）、术语（`docs/00-glossary.md`）、产品定位（`docs/PRODUCT-BRIEF.md`）、视觉系统（`docs/DESIGN-SYSTEM.md`）。
 
