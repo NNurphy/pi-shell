@@ -655,7 +655,7 @@ engineSweep.unref?.();
 // 历史（已落盘的 entry）仍由 session/open + entries?since 补齐；这里只补**未落盘的尾巴**（S2b）：
 //   - 每个引擎一份 SseTail + 自己的 seq 计数（跨引擎互不干扰 → 单引擎回放无空洞）；
 //   - **只缓冲「本轮已在流式中」的内容帧**（没有客户端也要缓冲，否则断线期间的事件回来后断片）：
-//     启动期/空闲期的帧、控制类帧一律不回放（v1.5 回归：首屏把启动期的 setStatus 补给了新页面）；
+//     启动期/空闲期的帧、控制类帧一律不回放（回归修复：首屏把启动期的 setStatus 补给了新页面）；
 //   - 数据帧带 `id: <seq>`，EventSource 断线自动重连会带 Last-Event-ID；
 //   - message_end 是落盘点 → 该帧广播后清空缓冲、baseSeq = 该帧 seq（此后内容走 entries）；
 //   - 会话身份变了（switch_session / new_session / 引擎重启）→ resetSseTail：
@@ -1303,6 +1303,114 @@ async function handleFile(req, res) {
   }
 }
 
+// ---------- /api/plan（计划协议：只读沙箱，白名单内读计划文件）----------
+// 只读：沙箱白名单（cwd 子树 / <agentDir>/plans / ~/.claude/plans），realpath 归一后再判，
+// 只允许 .md/.markdown/.txt，单文件 ≤2MiB。越界 → 403 PLAN_PATH_FORBIDDEN；超限 → 413 PLAN_TOO_LARGE；
+// 不存在 → 200 {exists:false}（前端渲染「文件缺失」态，不是错误弹窗）。
+
+const PLAN_MAX_BYTES = 2 * 1024 * 1024; // 2 MiB
+const PLAN_EXTS = new Set([".md", ".markdown", ".txt"]);
+
+function planErr(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+
+/** Windows 下大小写不敏感：比较前统一小写 */
+function pathKey(p) {
+  return process.platform === "win32" ? String(p).toLowerCase() : String(p);
+}
+
+function pathInside(child, root) {
+  if (!child || !root) return false;
+  const a = pathKey(child);
+  const b = pathKey(root);
+  return a === b || a.startsWith(b + path.sep);
+}
+
+/**
+ * realpath 归一；目标不存在时用「父目录 realpath + 文件名」兜底——
+ * 这样「父目录是符号链接、文件还没写」的逃逸也照样挡得住。
+ */
+async function realTargetOrNull(abs) {
+  try {
+    return await fsp.realpath(abs);
+  } catch {}
+  const parentReal = await fsp.realpath(path.dirname(abs)).catch(() => null);
+  return parentReal ? path.join(parentReal, path.basename(abs)) : null;
+}
+
+/** 计划文件白名单根（已尽量 realpath 归一；不存在的根用字面量比较） */
+async function planRoots(cwdAbs) {
+  const literal = [cwdAbs, path.join(AGENT_DIR, "plans"), path.join(os.homedir(), ".claude", "plans")];
+  const out = [];
+  for (const root of literal) {
+    const real = await fsp.realpath(root).catch(() => null);
+    out.push(real || path.resolve(root));
+  }
+  return out;
+}
+
+/** 首个 "# " 标题，无则文件名去扩展名 */
+function planTitle(content, real) {
+  const match = /^#[ \t]+(.+?)[ \t]*$/m.exec(content);
+  if (match) return match[1];
+  return path.basename(real).replace(/\.[^.]+$/, "");
+}
+
+/** 读计划文件：返回协议 §2.1 的响应体；越界/超限抛错（code 即错误码） */
+async function readPlanFile({ cwd, rawPath }) {
+  if (typeof rawPath !== "string" || !rawPath.trim()) throw planErr("BAD_REQUEST", "path 必填");
+  if (rawPath.includes("\0")) throw planErr("BAD_REQUEST", "路径含非法字符");
+
+  const cwdAbs = path.resolve(cwd);
+  const abs = path.resolve(cwdAbs, rawPath); // 相对 → 按 engine.cwd 解析；绝对 → 原样
+  const ext = path.extname(abs).toLowerCase();
+  if (!PLAN_EXTS.has(ext)) throw planErr("PLAN_PATH_FORBIDDEN", `计划文件只允许 .md/.markdown/.txt（${ext || "无扩展名"}）`);
+
+  const real = (await realTargetOrNull(abs)) || abs;
+  const roots = await planRoots(cwdAbs);
+  if (!roots.some((root) => pathInside(real, root))) {
+    throw planErr("PLAN_PATH_FORBIDDEN", "路径越出计划白名单（cwd / <agentDir>/plans / ~/.claude/plans）");
+  }
+
+  const cwdReal = (await fsp.realpath(cwdAbs).catch(() => null)) || cwdAbs;
+  const rel = path.relative(cwdReal, real);
+  const relPath = rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : null;
+
+  let stat = null;
+  try {
+    stat = await fsp.stat(real);
+  } catch {}
+  if (!stat) return { path: real, relPath, title: planTitle("", real), exists: false };
+  if (!stat.isFile()) throw planErr("PLAN_PATH_FORBIDDEN", "不是文件");
+  if (stat.size > PLAN_MAX_BYTES) throw planErr("PLAN_TOO_LARGE", `计划文件超过 2 MiB（${stat.size} 字节）`);
+
+  const content = await fsp.readFile(real, "utf8");
+  return {
+    path: real,
+    relPath,
+    title: planTitle(content, real),
+    content,
+    bytes: stat.size,
+    mtimeMs: stat.mtimeMs,
+    exists: true,
+  };
+}
+
+/** GET /api/plan?path=：cwd 取调用方那一列的引擎（与 /api/commands 同口径） */
+async function handlePlan(req, res) {
+  const engine = pickReadEngine({ client: explicitClientIdOf(req), find: (id) => pool.find(id), primary: primaryEngine() });
+  const cwd = engine?.extra?.cwd || primaryCwd();
+  try {
+    sendJson(res, 200, await readPlanFile({ cwd, rawPath: queryParam(req, "path") }));
+  } catch (err) {
+    const code = err?.code;
+    const status = code === "PLAN_TOO_LARGE" ? 413 : code === "PLAN_PATH_FORBIDDEN" ? 403 : HTTP_STATUS[code] || 400;
+    if (status === 403) log("warn", "plan_denied", { code, reason: err?.message });
+    sendError(res, status, code || "BAD_REQUEST", err?.message || "读取计划失败");
+  }
+}
+
 // ---------- /api/workspace（T-15）----------
 
 function waitForState(instance, pred, ms) {
@@ -1850,13 +1958,22 @@ async function handleSetThinking(engine, req, res) {
   }
 }
 
+// 计划协议：pi 侧没有同名 plan 命令时追加桥内置命令（有则不追加，避免重复）
+const BUILTIN_PLAN_COMMAND = { name: "plan", description: "只做计划，不改文件（pi-shell 内置）", source: "builtin" };
+
+function withBuiltinPlanCommand(commands) {
+  const list = Array.isArray(commands) ? commands : [];
+  if (list.some((cmd) => String(cmd?.name ?? "").trim().toLowerCase() === "plan")) return [...list];
+  return [...list, { ...BUILTIN_PLAN_COMMAND }];
+}
+
 /** GET /api/commands：同 /api/models，命令清单跟调用方那一列的引擎走（B1 / T5） */
 async function handleCommands(res, engine) {
   if (!requireRpc(engine, res)) return;
   const rpc = engine.rpc;
   try {
     const data = await rpc.request("get_commands");
-    sendJson(res, 200, { commands: data?.commands ?? [] }); // 直通（A-05）
+    sendJson(res, 200, { commands: withBuiltinPlanCommand(data?.commands) }); // 直通 + 内置 plan（A-05）
   } catch (err) {
     sendRpcError(res, err);
   }
@@ -2380,6 +2497,32 @@ function validateImages(images) {
   });
 }
 
+/**
+ * /plan 桥侧改写（计划协议）。
+ * 触发：message.trim() === "/plan" 或以 "/plan "（后跟空格）开头；其余返回 null（原文一字不改）。
+ * 改写后的文本以「[pi-shell 计划阶段]」开头，不会被再次识别（幂等）。
+ */
+function rewritePlanPrompt(rawMessage, cwd) {
+  if (typeof rawMessage !== "string") return null;
+  const trimmed = rawMessage.trim();
+  if (trimmed !== "/plan" && !trimmed.startsWith("/plan ")) return null;
+  const arg = trimmed.slice("/plan".length).trim();
+  const request = arg || "（用户未指定，先问我想要什么）";
+  const planDir = path.join(path.resolve(cwd), ".pi", "plans");
+  return [
+    "[pi-shell 计划阶段]",
+    "本阶段只做计划，不修改任何代码/配置文件（可用只读操作调研）。请按以下协议产出计划：",
+    "",
+    `1. 把计划写成 Markdown，保存到：${path.join(planDir, "<slug>.md")}（目录不存在就创建；同一任务反复修改请覆盖同一文件，slug 保持不变）。`,
+    "2. 计划正文要求：目标 / 现状与约束 / 步骤（每步含验收）/ 风险与回退 / 不做的事。",
+    "3. 回复正文的最后单独一行输出标记（不要加反引号、不要加别的内容）：",
+    "   PLAN_READY: .pi/plans/<slug>.md",
+    "4. 写完计划就停止，不要开始实施，等用户批准。",
+    "",
+    `用户请求：${request}`,
+  ].join("\n");
+}
+
 async function handlePrompt(engine, req, res) {
   const rpc = engine.rpc;
   let body;
@@ -2401,7 +2544,9 @@ async function handlePrompt(engine, req, res) {
     sendError(res, 400, "BAD_REQUEST", "message 不能为空");
     return;
   }
-  if (message) params.message = message;
+  // /plan 改写只影响发给 pi 的文本；会话里显示的用户消息由前端保留原文
+  const planMessage = message ? rewritePlanPrompt(message, engine.extra?.cwd || primaryCwd()) : null;
+  if (message) params.message = planMessage ?? message;
   if (body.images !== undefined) {
     try {
       params.images = validateImages(body.images);
@@ -2417,6 +2562,8 @@ async function handlePrompt(engine, req, res) {
     }
     params.streamingBehavior = body.streamingBehavior;
   }
+
+  if (planMessage) log("info", "prompt_rewritten", { kind: "plan", engine: engine.id, bytes: planMessage.length });
 
   try {
     // 504 TIMEOUT 只表示**命令回执**超时：事件流可能仍在继续，前端不得据此重发（03 §10）
@@ -3099,6 +3246,12 @@ const handleRequest = async (req, res) => {
     if (pathname === "/api/file") {
       if (method !== "GET") return sendError(res, 405, "BAD_REQUEST", "method not allowed");
       await handleFile(req, res);
+      return;
+    }
+
+    if (pathname === "/api/plan") {
+      if (method !== "GET") return sendError(res, 405, "BAD_REQUEST", "method not allowed");
+      await handlePlan(req, res);
       return;
     }
 
